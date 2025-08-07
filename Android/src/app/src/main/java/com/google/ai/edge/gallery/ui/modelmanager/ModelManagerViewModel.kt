@@ -27,8 +27,10 @@ import com.google.ai.edge.gallery.BuildConfig
 import com.google.ai.edge.gallery.common.getJsonResponse
 import com.google.ai.edge.gallery.data.AGWorkInfo
 import com.google.ai.edge.gallery.data.Accelerator
+import com.google.ai.edge.gallery.data.AllowedModel
 import com.google.ai.edge.gallery.data.Config
 import com.google.ai.edge.gallery.data.DataStoreRepository
+import com.google.ai.edge.gallery.data.DefaultConfig
 import com.google.ai.edge.gallery.data.DownloadRepository
 import com.google.ai.edge.gallery.data.EMPTY_MODEL
 import com.google.ai.edge.gallery.data.IMPORTS_DIR
@@ -71,6 +73,7 @@ import net.openid.appauth.AuthorizationRequest
 import net.openid.appauth.AuthorizationResponse
 import net.openid.appauth.AuthorizationService
 import net.openid.appauth.ResponseTypeValues
+import org.json.JSONObject
 
 private const val TAG = "AGModelManagerViewModel"
 private const val TEXT_INPUT_HISTORY_MAX_SIZE = 50
@@ -157,7 +160,7 @@ constructor(
   var pagerScrollState: MutableStateFlow<PagerScrollState> = MutableStateFlow(PagerScrollState())
 
   init {
-    loadModelAllowlist()
+    loadModelAllowlist(context)
   }
 
   override fun onCleared() {
@@ -634,31 +637,82 @@ constructor(
     }
   }
 
-  fun loadModelAllowlist() {
+  fun parseModelAllowlist(json: String): ModelAllowlist? {
+    return try {
+      val root = JSONObject(json)
+      val modelsArray = root.getJSONArray("models")
+      val models = mutableListOf<AllowedModel>()
+
+      for (i in 0 until modelsArray.length()) {
+        val item = modelsArray.getJSONObject(i)
+
+        val name = item.getString("name")
+        val modelId = item.getString("modelId")
+        val modelFile = item.getString("modelFile")
+        val description = item.getString("description")
+        val sizeInBytes = item.getLong("sizeInBytes")
+        val estimatedPeakMemoryInBytes = item.getLong("estimatedPeakMemoryInBytes")
+        val commitHash = item.getString("commitHash")
+        val llmSupportImage = if (item.has("llmSupportImage")) item.getBoolean("llmSupportImage") else false
+
+        // Parse defaultConfig
+        val configJson = item.getJSONObject("defaultConfig")
+        val defaultConfig = DefaultConfig(
+          topK = configJson.getInt("topK"),
+          topP = configJson.getDouble("topP").toFloat(),
+          temperature = configJson.getDouble("temperature").toFloat(),
+          maxTokens = configJson.getInt("maxTokens"),
+          accelerators = configJson.getString("accelerators")
+        )
+
+        // Parse taskTypes
+        val taskTypesArray = item.getJSONArray("taskTypes")
+        val taskTypes = mutableListOf<String>()
+        for (j in 0 until taskTypesArray.length()) {
+          taskTypes.add(taskTypesArray.getString(j))
+        }
+
+        val allowedModel = AllowedModel(
+          name = name,
+          modelId = modelId,
+          modelFile = modelFile,
+          description = description,
+          sizeInBytes = sizeInBytes,
+          estimatedPeakMemoryInBytes = estimatedPeakMemoryInBytes,
+          commitHash = commitHash,
+          llmSupportImage = llmSupportImage,
+          defaultConfig = defaultConfig,
+          taskTypes = taskTypes
+        )
+
+        models.add(allowedModel)
+      }
+
+      ModelAllowlist(models)
+    } catch (e: Exception) {
+      e.printStackTrace()
+      null
+    }
+  }
+
+  fun loadModelAllowlist(context: Context) {
     _uiState.update {
       uiState.value.copy(loadingModelAllowlist = true, loadingModelAllowlistError = "")
     }
 
     viewModelScope.launch(Dispatchers.IO) {
       try {
-        // Load model allowlist json.
-        val url =
-          "https://raw.githubusercontent.com/google-ai-edge/gallery/refs/heads/main/model_allowlists/${BuildConfig.VERSION_NAME.replace(".", "_")}.json"
-        Log.d(TAG, "Loading model allowlist from internet. Url: $url")
-        val data = getJsonResponse<ModelAllowlist>(url = url)
-        var modelAllowlist: ModelAllowlist? = data?.jsonObj
+        Log.d(TAG, "Loading model allowlist from local assets")
 
-        if (modelAllowlist == null) {
-          Log.d(TAG, "Failed to load model allowlist from internet. Trying to load it from disk")
-          modelAllowlist = readModelAllowlistFromDisk()
-        } else {
-          Log.d(TAG, "Done: loading model allowlist from internet")
-          saveModelAllowlistToDisk(modelAllowlistContent = data?.textContent ?: "{}")
-        }
+        val jsonString = context.assets.open("1_0_4.json")
+          .bufferedReader()
+          .use { it.readText() }
+
+        val modelAllowlist = parseModelAllowlist(jsonString)
 
         if (modelAllowlist == null) {
           _uiState.update {
-            uiState.value.copy(loadingModelAllowlistError = "Failed to load model list")
+            uiState.value.copy(loadingModelAllowlistError = "Failed to load model list from assets")
           }
           return@launch
         }
@@ -671,9 +725,7 @@ constructor(
         TASK_LLM_ASK_IMAGE.models.clear()
         TASK_LLM_ASK_AUDIO.models.clear()
         for (allowedModel in modelAllowlist.models) {
-          if (allowedModel.disabled == true) {
-            continue
-          }
+          if (allowedModel.disabled == true) continue
 
           val model = allowedModel.toModel()
           if (allowedModel.taskTypes.contains(TASK_LLM_CHAT.type.id)) {
@@ -701,6 +753,9 @@ constructor(
         processPendingDownloads()
       } catch (e: Exception) {
         e.printStackTrace()
+        _uiState.update {
+          uiState.value.copy(loadingModelAllowlistError = "Error loading local model allowlist")
+        }
       }
     }
   }
