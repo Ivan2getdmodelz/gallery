@@ -23,8 +23,6 @@ import androidx.core.net.toUri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.gallery.AppLifecycleProvider
-import com.google.ai.edge.gallery.BuildConfig
-import com.google.ai.edge.gallery.common.getJsonResponse
 import com.google.ai.edge.gallery.data.AGWorkInfo
 import com.google.ai.edge.gallery.data.Accelerator
 import com.google.ai.edge.gallery.data.AllowedModel
@@ -704,7 +702,7 @@ constructor(
       try {
         Log.d(TAG, "Loading model allowlist from local assets")
 
-        val jsonString = context.assets.open("1_0_4.json")
+        val jsonString = context.assets.open("model_allowlist_1_0_4.json")
           .bufferedReader()
           .use { it.readText() }
 
