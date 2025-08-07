@@ -414,9 +414,9 @@ fun HomeScreen(
       },
       title = { Text(uiState.loadingModelAllowlistError) },
       text = { Text("Please check your internet connection and try again later.") },
-      onDismissRequest = { modelManagerViewModel.loadModelAllowlist() },
+      onDismissRequest = { modelManagerViewModel.loadModelAllowlist(context) },
       confirmButton = {
-        TextButton(onClick = { modelManagerViewModel.loadModelAllowlist() }) { Text("Retry") }
+        TextButton(onClick = { modelManagerViewModel.loadModelAllowlist(context) }) { Text("Retry") }
       },
     )
   }
