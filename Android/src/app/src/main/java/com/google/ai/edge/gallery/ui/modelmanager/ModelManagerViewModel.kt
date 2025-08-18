@@ -649,9 +649,10 @@ constructor(
         val modelFile = item.getString("modelFile")
         val description = item.getString("description")
         val sizeInBytes = item.getLong("sizeInBytes")
-        val estimatedPeakMemoryInBytes = item.getLong("estimatedPeakMemoryInBytes")
+        val minDeviceMemoryInGb = item.getInt("minDeviceMemoryInGb")
         val commitHash = item.getString("commitHash")
         val llmSupportImage = if (item.has("llmSupportImage")) item.getBoolean("llmSupportImage") else false
+        val llmSupportAudio = if (item.has("llmSupportAudio")) item.getBoolean("llmSupportAudio") else false
 
         // Parse defaultConfig
         val configJson = item.getJSONObject("defaultConfig")
@@ -676,9 +677,10 @@ constructor(
           modelFile = modelFile,
           description = description,
           sizeInBytes = sizeInBytes,
-          estimatedPeakMemoryInBytes = estimatedPeakMemoryInBytes,
+          minDeviceMemoryInGb = minDeviceMemoryInGb,
           commitHash = commitHash,
           llmSupportImage = llmSupportImage,
+          llmSupportAudio = llmSupportAudio,
           defaultConfig = defaultConfig,
           taskTypes = taskTypes
         )
