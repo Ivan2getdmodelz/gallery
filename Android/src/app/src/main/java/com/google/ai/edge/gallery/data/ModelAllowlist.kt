@@ -36,10 +36,10 @@ data class AllowedModel(
   val commitHash: String,
   val defaultConfig: DefaultConfig,
   val taskTypes: List<String>,
+  val minDeviceMemoryInGb: Int,
   val disabled: Boolean? = null,
   val llmSupportImage: Boolean? = null,
   val llmSupportAudio: Boolean? = null,
-  val minDeviceMemoryInGb: Int? = null,
   val bestForTaskTypes: List<String>? = null,
 ) {
   fun toModel(): Model {
