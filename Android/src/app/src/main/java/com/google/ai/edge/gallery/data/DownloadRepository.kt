@@ -33,44 +33,39 @@ import androidx.core.os.bundleOf
 import androidx.work.Data
 import androidx.work.ExistingWorkPolicy
 import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.Operation
 import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
-import androidx.work.WorkQuery
 import com.google.ai.edge.gallery.AppLifecycleProvider
 import com.google.ai.edge.gallery.R
-import com.google.ai.edge.gallery.common.readLaunchInfo
 import com.google.ai.edge.gallery.firebaseAnalytics
 import com.google.ai.edge.gallery.worker.DownloadWorker
-import com.google.common.util.concurrent.FutureCallback
-import com.google.common.util.concurrent.Futures
-import com.google.common.util.concurrent.ListenableFuture
-import com.google.common.util.concurrent.MoreExecutors
 import java.util.UUID
+import java.util.concurrent.Executors
 
 private const val TAG = "AGDownloadRepository"
 private const val MODEL_NAME_TAG = "modelName"
+private const val TASK_ID_TAG = "taskId"
 
-data class AGWorkInfo(val modelName: String, val workId: String)
+data class AGWorkInfo(val taskId: String, val modelName: String, val workId: String)
 
 interface DownloadRepository {
   fun downloadModel(
+    task: Task,
     model: Model,
     onStatusUpdated: (model: Model, status: ModelDownloadStatus) -> Unit,
   )
 
   fun cancelDownloadModel(model: Model)
 
-  fun cancelAll(models: List<Model>, onComplete: () -> Unit)
+  fun cancelAll(onComplete: () -> Unit)
 
   fun observerWorkerProgress(
     workerId: UUID,
+    task: Task,
     model: Model,
     onStatusUpdated: (model: Model, status: ModelDownloadStatus) -> Unit,
   )
-
-  fun getEnqueuedOrRunningWorkInfos(): List<AGWorkInfo>
 }
 
 /**
@@ -96,11 +91,10 @@ class DefaultDownloadRepository(
     context.getSharedPreferences("download_start_time_ms", Context.MODE_PRIVATE)
 
   override fun downloadModel(
+    task: Task,
     model: Model,
     onStatusUpdated: (model: Model, status: ModelDownloadStatus) -> Unit,
   ) {
-    val appTs = readLaunchInfo(context = context)?.ts ?: 0
-
     // Create input data.
     val builder = Data.Builder()
     val totalBytes = model.totalBytes + model.extraDataFiles.sumOf { it.sizeInBytes }
@@ -108,13 +102,12 @@ class DefaultDownloadRepository(
       builder
         .putString(KEY_MODEL_NAME, model.name)
         .putString(KEY_MODEL_URL, model.url)
-        .putString(KEY_MODEL_COMMIT_HASH, model.commitHash)
+        .putString(KEY_MODEL_COMMIT_HASH, model.version)
         .putString(KEY_MODEL_DOWNLOAD_MODEL_DIR, model.normalizedName)
         .putString(KEY_MODEL_DOWNLOAD_FILE_NAME, model.downloadFileName)
         .putBoolean(KEY_MODEL_IS_ZIP, model.isZip)
         .putString(KEY_MODEL_UNZIPPED_DIR, model.unzipDir)
         .putLong(KEY_MODEL_TOTAL_BYTES, totalBytes)
-        .putLong(KEY_MODEL_DOWNLOAD_APP_TS, appTs)
 
     if (model.extraDataFiles.isNotEmpty()) {
       inputDataBuilder
@@ -135,6 +128,7 @@ class DefaultDownloadRepository(
         .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         .setInputData(inputData)
         .addTag("$MODEL_NAME_TAG:${model.name}")
+        .addTag("$TASK_ID_TAG:${task.id}")
         .build()
 
     val workerId = downloadWorkRequest.id
@@ -143,44 +137,28 @@ class DefaultDownloadRepository(
     workManager.enqueueUniqueWork(model.name, ExistingWorkPolicy.REPLACE, downloadWorkRequest)
 
     // Observe progress.
-    observerWorkerProgress(workerId = workerId, model = model, onStatusUpdated = onStatusUpdated)
+    observerWorkerProgress(
+      workerId = workerId,
+      task = task,
+      model = model,
+      onStatusUpdated = onStatusUpdated,
+    )
   }
 
   override fun cancelDownloadModel(model: Model) {
     workManager.cancelAllWorkByTag("$MODEL_NAME_TAG:${model.name}")
   }
 
-  override fun cancelAll(models: List<Model>, onComplete: () -> Unit) {
-    if (models.isEmpty()) {
-      onComplete()
-      return
-    }
-
-    val futures = mutableListOf<ListenableFuture<Operation.State.SUCCESS>>()
-    for (tag in models.map { "$MODEL_NAME_TAG:${it.name}" }) {
-      futures.add(workManager.cancelAllWorkByTag(tag).result)
-    }
-    val combinedFuture: ListenableFuture<List<Operation.State.SUCCESS>> = Futures.allAsList(futures)
-    Futures.addCallback(
-      combinedFuture,
-      object : FutureCallback<List<Operation.State.SUCCESS>> {
-        override fun onSuccess(result: List<Operation.State.SUCCESS>?) {
-          // All cancellations are complete
-          onComplete()
-        }
-
-        override fun onFailure(t: Throwable) {
-          // At least one cancellation failed
-          t.printStackTrace()
-          onComplete()
-        }
-      },
-      MoreExecutors.directExecutor(),
-    )
+  override fun cancelAll(onComplete: () -> Unit) {
+    workManager
+      .cancelAllWork()
+      .result
+      .addListener({ onComplete() }, Executors.newSingleThreadExecutor())
   }
 
   override fun observerWorkerProgress(
     workerId: UUID,
+    task: Task,
     model: Model,
     onStatusUpdated: (model: Model, status: ModelDownloadStatus) -> Unit,
   ) {
@@ -230,6 +208,7 @@ class DefaultDownloadRepository(
             sendNotification(
               title = context.getString(R.string.notification_title_success),
               text = context.getString(R.string.notification_content_success).format(model.name),
+              taskId = task.id,
               modelName = model.name,
             )
 
@@ -260,6 +239,7 @@ class DefaultDownloadRepository(
               sendNotification(
                 title = context.getString(R.string.notification_title_fail),
                 text = context.getString(R.string.notification_content_success).format(model.name),
+                taskId = "",
                 modelName = "",
               )
             }
@@ -288,32 +268,7 @@ class DefaultDownloadRepository(
     }
   }
 
-  /**
-   * Retrieves a list of AGWorkInfo objects representing WorkManager work items that are either
-   * enqueued or currently running.
-   */
-  override fun getEnqueuedOrRunningWorkInfos(): List<AGWorkInfo> {
-    val workQuery =
-      WorkQuery.Builder.fromStates(listOf(WorkInfo.State.ENQUEUED, WorkInfo.State.RUNNING)).build()
-
-    return workManager.getWorkInfos(workQuery).get().map { info ->
-      val tags = info.tags
-      var modelName = ""
-      Log.d(TAG, "work: ${info.id}, tags: $tags")
-      for (tag in tags) {
-        if (tag.startsWith("$MODEL_NAME_TAG:")) {
-          val index = tag.indexOf(':')
-          if (index >= 0) {
-            modelName = tag.substring(index + 1)
-            break
-          }
-        }
-      }
-      return@map AGWorkInfo(modelName = modelName, workId = info.id.toString())
-    }
-  }
-
-  private fun sendNotification(title: String, text: String, modelName: String) {
+  private fun sendNotification(title: String, text: String, taskId: String, modelName: String) {
     // Don't send notification if app is in foreground.
     if (lifecycleProvider.isAppInForeground) {
       return
@@ -332,9 +287,8 @@ class DefaultDownloadRepository(
 
     // Create an Intent to open your app with a deep link.
     val intent =
-      Intent(Intent.ACTION_VIEW, "com.google.ai.edge.gallery://model/${modelName}".toUri()).apply {
-        flags = Intent.FLAG_ACTIVITY_NEW_TASK
-      }
+      Intent(Intent.ACTION_VIEW, "com.google.ai.edge.gallery://model/$taskId/${modelName}".toUri())
+        .apply { flags = Intent.FLAG_ACTIVITY_NEW_TASK }
 
     // Create a PendingIntent
     val pendingIntent: PendingIntent =

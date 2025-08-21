@@ -84,9 +84,9 @@ import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.google.ai.edge.gallery.R
+import com.google.ai.edge.gallery.data.BuiltInTaskId
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.Task
-import com.google.ai.edge.gallery.data.TaskType
 import com.google.ai.edge.gallery.ui.common.ErrorDialog
 import com.google.ai.edge.gallery.ui.modelmanager.ModelInitializationStatusType
 import com.google.ai.edge.gallery.ui.modelmanager.ModelManagerViewModel
@@ -191,7 +191,9 @@ fun ChatPanel(
     // changes we want the display to not scroll.
     if (messages.isNotEmpty()) {
       if (uiState.showingStatsByModel === lastShowingStatsByModel.value) {
-        listState.animateScrollToItem(messages.lastIndex, scrollOffset = 10000)
+        if (!listState.canScrollForward) {
+          listState.animateScrollToItem(messages.lastIndex, scrollOffset = 10000)
+        }
       } else {
         // Scroll to bottom if the message to show stats is the last message.
         val curShowingStats =
@@ -394,7 +396,7 @@ fun ChatPanel(
                     LatencyText(message = message)
                     // A button to show stats for the LLM message.
                     if (
-                      task.type.id.startsWith("llm_") &&
+                      task.id.startsWith("llm_") &&
                         message is ChatMessageText
                         // This means we only want to show the action button when the message is
                         // done
@@ -474,7 +476,7 @@ fun ChatPanel(
       SnackbarHost(hostState = snackbarHostState, modifier = Modifier.padding(vertical = 4.dp))
 
       // Show an info message for ask image task to get users started.
-      if (task.type == TaskType.LLM_ASK_IMAGE && messages.isEmpty()) {
+      if (task.id == BuiltInTaskId.LLM_ASK_IMAGE && messages.isEmpty()) {
         Column(
           modifier = Modifier.padding(horizontal = 16.dp).fillMaxSize(),
           horizontalAlignment = Alignment.CenterHorizontally,
@@ -490,7 +492,7 @@ fun ChatPanel(
         }
       }
       // Show an info message for ask image task to get users started.
-      else if (task.type == TaskType.LLM_ASK_AUDIO && messages.isEmpty()) {
+      else if (task.id == BuiltInTaskId.LLM_ASK_AUDIO && messages.isEmpty()) {
         Column(
           modifier = Modifier.padding(horizontal = 16.dp).fillMaxSize(),
           horizontalAlignment = Alignment.CenterHorizontally,
@@ -544,9 +546,9 @@ fun ChatPanel(
           //          showPromptTemplatesInMenu = isLlmTask && notLlmStartScreen,
           showPromptTemplatesInMenu = false,
           showImagePickerInMenu =
-            selectedModel.llmSupportImage && task.type === TaskType.LLM_ASK_IMAGE,
+            selectedModel.llmSupportImage && task.id === BuiltInTaskId.LLM_ASK_IMAGE,
           showAudioItemsInMenu =
-            selectedModel.llmSupportAudio && task.type === TaskType.LLM_ASK_AUDIO,
+            selectedModel.llmSupportAudio && task.id === BuiltInTaskId.LLM_ASK_AUDIO,
           showStopButtonWhenInProgress = showStopButtonInInputWhenInProgress,
         )
       }

@@ -14,13 +14,14 @@
  * limitations under the License.
  */
 
-package com.google.ai.edge.gallery.ui.common
+package com.google.ai.edge.gallery.common
 
 import androidx.core.net.toUri
 import net.openid.appauth.AuthorizationServiceConfiguration
 
-object AuthConfig {
+object ProjectConfig {
   // Hugging Face Client ID.
+  //
   const val clientId = "REPLACE_WITH_YOUR_CLIENT_ID_IN_HUGGINGFACE_APP"
 
   // Registered redirect URI.

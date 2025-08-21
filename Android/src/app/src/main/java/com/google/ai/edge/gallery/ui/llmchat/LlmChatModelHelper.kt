@@ -21,14 +21,17 @@ import android.graphics.Bitmap
 import android.util.Log
 import com.google.ai.edge.gallery.common.cleanUpMediapipeTaskErrorMessage
 import com.google.ai.edge.gallery.data.Accelerator
-import com.google.ai.edge.gallery.data.ConfigKey
+import com.google.ai.edge.gallery.data.BuiltInTaskId
+import com.google.ai.edge.gallery.data.ConfigKeys
 import com.google.ai.edge.gallery.data.DEFAULT_MAX_TOKEN
 import com.google.ai.edge.gallery.data.DEFAULT_TEMPERATURE
 import com.google.ai.edge.gallery.data.DEFAULT_TOPK
 import com.google.ai.edge.gallery.data.DEFAULT_TOPP
 import com.google.ai.edge.gallery.data.MAX_IMAGE_COUNT
 import com.google.ai.edge.gallery.data.Model
+import com.google.ai.edge.gallery.data.Task
 import com.google.mediapipe.framework.image.BitmapImageBuilder
+import com.google.mediapipe.tasks.genai.llminference.AudioModelOptions
 import com.google.mediapipe.tasks.genai.llminference.GraphOptions
 import com.google.mediapipe.tasks.genai.llminference.LlmInference
 import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
@@ -45,17 +48,20 @@ object LlmChatModelHelper {
   // Indexed by model name.
   private val cleanUpListeners: MutableMap<String, CleanUpListener> = mutableMapOf()
 
-  fun initialize(context: Context, model: Model, onDone: (String) -> Unit) {
+  fun initialize(context: Context, task: Task, model: Model, onDone: (String) -> Unit) {
     // Prepare options.
     val maxTokens =
-      model.getIntConfigValue(key = ConfigKey.MAX_TOKENS, defaultValue = DEFAULT_MAX_TOKEN)
-    val topK = model.getIntConfigValue(key = ConfigKey.TOPK, defaultValue = DEFAULT_TOPK)
-    val topP = model.getFloatConfigValue(key = ConfigKey.TOPP, defaultValue = DEFAULT_TOPP)
+      model.getIntConfigValue(key = ConfigKeys.MAX_TOKENS, defaultValue = DEFAULT_MAX_TOKEN)
+    val topK = model.getIntConfigValue(key = ConfigKeys.TOPK, defaultValue = DEFAULT_TOPK)
+    val topP = model.getFloatConfigValue(key = ConfigKeys.TOPP, defaultValue = DEFAULT_TOPP)
     val temperature =
-      model.getFloatConfigValue(key = ConfigKey.TEMPERATURE, defaultValue = DEFAULT_TEMPERATURE)
+      model.getFloatConfigValue(key = ConfigKeys.TEMPERATURE, defaultValue = DEFAULT_TEMPERATURE)
     val accelerator =
-      model.getStringConfigValue(key = ConfigKey.ACCELERATOR, defaultValue = Accelerator.GPU.label)
+      model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = Accelerator.GPU.label)
     Log.d(TAG, "Initializing...")
+    val shouldEnableImage = model.llmSupportImage && task.id == BuiltInTaskId.LLM_ASK_IMAGE
+    val shouldEnableAudio = model.llmSupportAudio && task.id == BuiltInTaskId.LLM_ASK_AUDIO
+    Log.d(TAG, "Enable image: $shouldEnableImage, enable audio: $shouldEnableAudio")
     val preferredBackend =
       when (accelerator) {
         Accelerator.CPU.label -> LlmInference.Backend.CPU
@@ -67,7 +73,10 @@ object LlmChatModelHelper {
         .setModelPath(model.getPath(context = context))
         .setMaxTokens(maxTokens)
         .setPreferredBackend(preferredBackend)
-        .setMaxNumImages(if (model.llmSupportImage) MAX_IMAGE_COUNT else 0)
+        .setMaxNumImages(if (shouldEnableImage) MAX_IMAGE_COUNT else 0)
+    if (shouldEnableAudio) {
+      optionsBuilder.setAudioModelOptions(AudioModelOptions.builder().build())
+    }
     val options = optionsBuilder.build()
 
     // Create an instance of the LLM Inference task and session.
@@ -83,7 +92,8 @@ object LlmChatModelHelper {
             .setTemperature(temperature)
             .setGraphOptions(
               GraphOptions.builder()
-                .setEnableVisionModality(model.llmSupportImage)
+                .setEnableVisionModality(shouldEnableImage)
+                .setEnableAudioModality(shouldEnableAudio)
                 .build()
             )
             .build(),
@@ -96,7 +106,7 @@ object LlmChatModelHelper {
     onDone("")
   }
 
-  fun resetSession(model: Model) {
+  fun resetSession(task: Task, model: Model) {
     try {
       Log.d(TAG, "Resetting session for model '${model.name}'")
 
@@ -105,10 +115,13 @@ object LlmChatModelHelper {
       session.close()
 
       val inference = instance.engine
-      val topK = model.getIntConfigValue(key = ConfigKey.TOPK, defaultValue = DEFAULT_TOPK)
-      val topP = model.getFloatConfigValue(key = ConfigKey.TOPP, defaultValue = DEFAULT_TOPP)
+      val topK = model.getIntConfigValue(key = ConfigKeys.TOPK, defaultValue = DEFAULT_TOPK)
+      val topP = model.getFloatConfigValue(key = ConfigKeys.TOPP, defaultValue = DEFAULT_TOPP)
       val temperature =
-        model.getFloatConfigValue(key = ConfigKey.TEMPERATURE, defaultValue = DEFAULT_TEMPERATURE)
+        model.getFloatConfigValue(key = ConfigKeys.TEMPERATURE, defaultValue = DEFAULT_TEMPERATURE)
+      val shouldEnableImage = model.llmSupportImage && task.id == BuiltInTaskId.LLM_ASK_IMAGE
+      val shouldEnableAudio = model.llmSupportAudio && task.id == BuiltInTaskId.LLM_ASK_AUDIO
+      Log.d(TAG, "Enable image: $shouldEnableImage, enable audio: $shouldEnableAudio")
       val newSession =
         LlmInferenceSession.createFromOptions(
           inference,
@@ -118,7 +131,8 @@ object LlmChatModelHelper {
             .setTemperature(temperature)
             .setGraphOptions(
               GraphOptions.builder()
-                .setEnableVisionModality(model.llmSupportImage)
+                .setEnableVisionModality(shouldEnableImage)
+                .setEnableAudioModality(shouldEnableAudio)
                 .build()
             )
             .build(),
@@ -130,7 +144,7 @@ object LlmChatModelHelper {
     }
   }
 
-  fun cleanUp(model: Model) {
+  fun cleanUp(model: Model, onDone: () -> Unit) {
     if (model.instance == null) {
       return
     }
@@ -154,6 +168,8 @@ object LlmChatModelHelper {
       onCleanUp()
     }
     model.instance = null
+
+    onDone()
     Log.d(TAG, "Clean up done.")
   }
 
@@ -184,8 +200,7 @@ object LlmChatModelHelper {
       session.addImage(BitmapImageBuilder(image).build())
     }
     for (audioClip in audioClips) {
-      // Uncomment when audio is supported.
-      // session.addAudio(audioClip)
+      session.addAudio(audioClip)
     }
     val unused = session.generateResponseAsync(resultListener)
   }

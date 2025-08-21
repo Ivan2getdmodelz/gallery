@@ -63,7 +63,7 @@ fun ModelPageAppBar(
   model: Model,
   modelManagerViewModel: ModelManagerViewModel,
   onBackClicked: () -> Unit,
-  onModelSelected: (Model) -> Unit,
+  onModelSelected: (prev: Model, cur: Model) -> Unit,
   inProgress: Boolean,
   modelPreparing: Boolean,
   modifier: Modifier = Modifier,
@@ -79,6 +79,10 @@ fun ModelPageAppBar(
   val context = LocalContext.current
   val curDownloadStatus = modelManagerUiState.modelDownloadStatus[model.name]
   val modelInitializationStatus = modelManagerUiState.modelInitializationStatus[model.name]
+  val isModelInitializing =
+    modelInitializationStatus?.status == ModelInitializationStatusType.INITIALIZING
+  val isModelInitialized =
+    modelInitializationStatus?.status == ModelInitializationStatusType.INITIALIZED
 
   CenterAlignedTopAppBar(
     title = {
@@ -98,14 +102,14 @@ fun ModelPageAppBar(
             contentDescription = "",
           )
           Text(
-            task.type.label,
+            task.label,
             style = MaterialTheme.typography.titleMedium,
             color = getTaskIconColor(task = task),
           )
         }
 
         // Model chips pager.
-        ModelPickerChipsPager(
+        ModelPickerChip(
           task = task,
           initialModel = model,
           modelManagerViewModel = modelManagerViewModel,
@@ -116,7 +120,8 @@ fun ModelPageAppBar(
     modifier = modifier,
     // The back button.
     navigationIcon = {
-      IconButton(onClick = onBackClicked) {
+      val enableBackButton = !isModelInitializing && !inProgress
+      IconButton(onClick = onBackClicked, enabled = enableBackButton) {
         Icon(imageVector = Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = "")
       }
     },
@@ -130,10 +135,8 @@ fun ModelPageAppBar(
         if (showConfigButton && canShowResetSessionButton) {
           configButtonOffset = (-40).dp
         }
-        val isModelInitializing =
-          modelInitializationStatus?.status == ModelInitializationStatusType.INITIALIZING
         if (showConfigButton) {
-          val enableConfigButton = !isModelInitializing && !inProgress
+          val enableConfigButton = !isModelInitializing && !inProgress && isModelInitialized
           IconButton(
             onClick = { showConfigDialog = true },
             enabled = enableConfigButton,
@@ -156,7 +159,7 @@ fun ModelPageAppBar(
               modifier = Modifier.size(16.dp),
             )
           } else {
-            val enableResetButton = !isModelInitializing && !modelPreparing
+            val enableResetButton = !isModelInitializing && !modelPreparing && isModelInitialized
             IconButton(
               onClick = { onResetSessionClicked(model) },
               enabled = enableResetButton,
@@ -225,6 +228,7 @@ fun ModelPageAppBar(
         // Save the config values to Model.
         val oldConfigValues = model.configValues
         model.configValues = curConfigValues
+        modelManagerViewModel.updateConfigValuesUpdateTrigger()
 
         // Force to re-initialize the model with the new configs.
         if (needReinitialization) {

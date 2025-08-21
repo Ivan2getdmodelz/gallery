@@ -35,13 +35,14 @@ android {
     applicationId = "com.google.aiedge.gallery"
     minSdk = 31
     targetSdk = 35
-    versionCode = 1
-    versionName = "1.0.4"
+    versionCode = 8
+    versionName = "1.0.5"
 
     // Needed for HuggingFace auth workflows.
     // Use the scheme of the "Redirect URLs" in HuggingFace app.
     manifestPlaceholders["appAuthRedirectScheme"] =
         "REPLACE_WITH_YOUR_REDIRECT_SCHEME_IN_HUGGINGFACE_APP"
+    manifestPlaceholders["applicationName"] = "com.google.ai.edge.gallery.GalleryApplication"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
   }
@@ -103,6 +104,7 @@ dependencies {
   implementation(libs.play.services.oss.licenses)
   implementation(platform(libs.firebase.bom))
   implementation(libs.firebase.analytics)
+  implementation(libs.androidx.exifinterface)
   kapt(libs.hilt.android.compiler)
   testImplementation(libs.junit)
   androidTestImplementation(libs.androidx.junit)

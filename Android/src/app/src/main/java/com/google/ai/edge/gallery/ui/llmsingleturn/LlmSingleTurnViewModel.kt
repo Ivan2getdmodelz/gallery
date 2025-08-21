@@ -21,7 +21,6 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.ai.edge.gallery.common.processLlmResponse
 import com.google.ai.edge.gallery.data.Model
-import com.google.ai.edge.gallery.data.TASK_LLM_PROMPT_LAB
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.ui.common.chat.ChatMessageBenchmarkLlmResult
 import com.google.ai.edge.gallery.ui.common.chat.Stat
@@ -67,10 +66,10 @@ private val STATS =
 
 @HiltViewModel
 class LlmSingleTurnViewModel @Inject constructor() : ViewModel() {
-  private val _uiState = MutableStateFlow(createUiState(task = TASK_LLM_PROMPT_LAB))
+  private val _uiState = MutableStateFlow(createUiState())
   val uiState = _uiState.asStateFlow()
 
-  fun generateResponse(model: Model, input: String) {
+  fun generateResponse(task: Task, model: Model, input: String) {
     viewModelScope.launch(Dispatchers.Default) {
       setInProgress(true)
       setPreparing(true)
@@ -80,7 +79,7 @@ class LlmSingleTurnViewModel @Inject constructor() : ViewModel() {
         delay(100)
       }
 
-      LlmChatModelHelper.resetSession(model = model)
+      LlmChatModelHelper.resetSession(task = task, model = model)
       delay(500)
 
       // Run inference.
@@ -215,14 +214,10 @@ class LlmSingleTurnViewModel @Inject constructor() : ViewModel() {
     }
   }
 
-  private fun createUiState(task: Task): LlmSingleTurnUiState {
+  private fun createUiState(): LlmSingleTurnUiState {
     val responsesByModel: MutableMap<String, Map<String, String>> = mutableMapOf()
     val benchmarkByModel: MutableMap<String, Map<String, ChatMessageBenchmarkLlmResult>> =
       mutableMapOf()
-    for (model in task.models) {
-      responsesByModel[model.name] = mutableMapOf()
-      benchmarkByModel[model.name] = mutableMapOf()
-    }
     return LlmSingleTurnUiState(
       responsesByModel = responsesByModel,
       benchmarkByModel = benchmarkByModel,
