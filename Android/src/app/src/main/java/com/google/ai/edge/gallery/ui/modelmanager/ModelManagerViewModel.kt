@@ -70,7 +70,8 @@ import org.json.JSONObject
 
 private const val TAG = "AGModelManagerViewModel"
 private const val TEXT_INPUT_HISTORY_MAX_SIZE = 50
-private const val MODEL_ALLOWLIST_FILENAME = "model_allowlist.json"
+private const val MODEL_ALLOWLIST_VERSION = "1_0_5"
+private const val MODEL_ALLOWLIST_FILENAME = "model_allowlist_$MODEL_ALLOWLIST_VERSION.json"
 
 data class ModelInitializationStatus(
   val status: ModelInitializationStatusType,
