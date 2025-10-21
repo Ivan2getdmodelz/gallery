@@ -79,13 +79,21 @@ class LlmSingleTurnViewModel @Inject constructor() : ViewModel() {
         delay(100)
       }
 
-      LlmChatModelHelper.resetSession(task = task, model = model)
+      val supportImage =
+        model.llmSupportImage &&
+          task.id == com.google.ai.edge.gallery.data.BuiltInTaskId.LLM_ASK_IMAGE
+      val supportAudio =
+        model.llmSupportAudio &&
+          task.id == com.google.ai.edge.gallery.data.BuiltInTaskId.LLM_ASK_AUDIO
+      LlmChatModelHelper.resetConversation(
+        model = model,
+        supportImage = supportImage,
+        supportAudio = supportAudio,
+      )
       delay(500)
 
       // Run inference.
       val instance = model.instance as LlmModelInstance
-      val prefillTokens = instance.session.sizeInTokens(input)
-
       var firstRun = true
       var timeToFirstToken = 0f
       var firstTokenTs = 0L
@@ -105,6 +113,7 @@ class LlmSingleTurnViewModel @Inject constructor() : ViewModel() {
             setPreparing(false)
             firstTokenTs = System.currentTimeMillis()
             timeToFirstToken = (firstTokenTs - start) / 1000f
+            val prefillTokens = instance.conversation.getBenchmarkInfo().lastPrefillTokenCount
             prefillSpeed = prefillTokens / timeToFirstToken
             firstRun = false
           } else {
@@ -210,7 +219,7 @@ class LlmSingleTurnViewModel @Inject constructor() : ViewModel() {
     viewModelScope.launch(Dispatchers.Default) {
       setInProgress(false)
       val instance = model.instance as LlmModelInstance
-      instance.session.cancelGenerateResponseAsync()
+      instance.conversation.cancelProcess()
     }
   }
 

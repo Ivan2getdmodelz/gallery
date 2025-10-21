@@ -39,13 +39,20 @@ data class PromptTemplate(val title: String, val description: String, val prompt
  */
 data class Model(
   /**
-   * The name of the model for display purpose.
+   * The name of the model.
    *
-   * This name is also used to uniquely identify this model among all the tasks.
+   * This field is used to uniquely identify this model among all the tasks.
    *
    * IMPORTANT: it shouldn't contain "/" character.
    */
   val name: String,
+
+  /**
+   * The display name of the model, for display purpose.
+   *
+   * If this field is not set, the `name` field above will be used as the default display name.
+   */
+  val displayName: String = "",
 
   /**
    * (optional)
@@ -171,6 +178,13 @@ data class Model(
    */
   val localFileRelativeDirPathOverride: String = "",
 
+  /**
+   * When set, the app will try to use this path to find the model file.
+   *
+   * For testing purpose only.
+   */
+  val localModelFilePathOverride: String = "",
+
   // The following fields are only used for built-in tasks. Can ignore if you are creating your own
   // custom tasks.
   //
@@ -227,6 +241,10 @@ data class Model(
     if (imported) {
       return listOf(context.getExternalFilesDir(null)?.absolutePath ?: "", fileName)
         .joinToString(File.separator)
+    }
+
+    if (localModelFilePathOverride.isNotEmpty()) {
+      return localModelFilePathOverride
     }
 
     if (localFileRelativeDirPathOverride.isNotEmpty()) {

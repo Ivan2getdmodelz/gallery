@@ -48,6 +48,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -57,7 +58,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import com.google.ai.edge.gallery.R
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.ModelDownloadStatusType
 import com.google.ai.edge.gallery.data.Task
@@ -91,7 +94,6 @@ fun ChatView(
   onResetSessionClicked: (Model) -> Unit = {},
   onStreamImageMessage: (Model, ChatMessageImage) -> Unit = { _, _ -> },
   onStopButtonClicked: (Model) -> Unit = {},
-  chatInputType: ChatInputType = ChatInputType.TEXT,
   showStopButtonInInputWhenInProgress: Boolean = false,
 ) {
   val uiState by viewModel.uiState.collectAsState()
@@ -99,7 +101,7 @@ fun ChatView(
   val selectedModel = modelManagerUiState.selectedModel
 
   // Image viewer related.
-  var selectedImageIndex by remember { mutableStateOf<Int>(-1) }
+  var selectedImageIndex by remember { mutableIntStateOf(-1) }
   var allImageViewerImages by remember { mutableStateOf<List<Bitmap>>(listOf()) }
   var showImageViewer by remember { mutableStateOf(false) }
 
@@ -174,10 +176,7 @@ fun ChatView(
       // val curSelectedModel = task.models[pageIndex]
       val curModelDownloadStatus = modelManagerUiState.modelDownloadStatus[selectedModel.name]
 
-      Column(
-        modifier =
-          Modifier.padding(innerPadding).fillMaxSize().background(MaterialTheme.colorScheme.surface)
-      ) {
+      Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         AnimatedContent(
           targetState = curModelDownloadStatus?.status == ModelDownloadStatusType.SUCCEEDED
         ) { targetState ->
@@ -189,6 +188,7 @@ fun ChatView(
                 task = task,
                 selectedModel = selectedModel,
                 viewModel = viewModel,
+                innerPadding = innerPadding,
                 navigateUp = navigateUp,
                 onSendMessage = onSendMessage,
                 onRunAgainClicked = onRunAgainClicked,
@@ -210,7 +210,6 @@ fun ChatView(
                   showImageViewer = true
                 },
                 modifier = Modifier.weight(1f),
-                chatInputType = chatInputType,
                 showStopButtonInInputWhenInProgress = showStopButtonInInputWhenInProgress,
               )
             // Model download
@@ -258,7 +257,7 @@ fun ChatView(
           ) {
             Icon(
               Icons.Rounded.Close,
-              contentDescription = "",
+              contentDescription = stringResource(R.string.cd_close_image_viewer_icon),
               tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
           }

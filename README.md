@@ -7,11 +7,11 @@
 
 The Google AI Edge Gallery is an experimental app that puts the power of cutting-edge Generative AI models directly into your hands, running entirely on your Android *(available now)* and iOS *(coming soon)* devices. Dive into a world of creative and practical AI use cases, all running locally, without needing an internet connection once the model is loaded. Experiment with different models, chat, ask questions with images and audio clip, explore prompts, and more!
 
-Install the app today from Google Play (**US only**)
+Install the app today from Google Play
 
 <a href='https://play.google.com/store/apps/details?id=com.google.ai.edge.gallery'><img alt='Get it on Google Play' width="250" src='https://play.google.com/intl/en_us/badges/static/images/badges/en_badge_web_generic.png'/></a>
 
-For users outside the US, install the apk from the [**latest release**](https://github.com/google-ai-edge/gallery/releases/latest/)
+For users without Google Play access, install the apk from the [**latest release**](https://github.com/google-ai-edge/gallery/releases/latest/)
 
 > [!IMPORTANT]
 > You must uninstall all previous versions of the app before installing this one. Past versions will no longer be working and supported.
@@ -31,15 +31,16 @@ For users outside the US, install the apk from the [**latest release**](https://
 *   **✍️ Prompt Lab:** Summarize, rewrite, generate code, or use freeform prompts to explore single-turn LLM use cases.
 *   **💬 AI Chat:** Engage in multi-turn conversations.
 *   **📊 Performance Insights:** Real-time benchmarks (TTFT, decode speed, latency).
-*   **🧩 Bring Your Own Model:** Test your local LiteRT `.litermlm` models.
+*   **🧩 Bring Your Own Model:** Test your local LiteRT `.litertlm` models.
 *   **🔗 Developer Resources:** Quick links to model cards and source code.
 
 ## 🏁 Get Started in Minutes!
 
-1.  **Download the App:**
-    - For US users: Install the app from [Google Play](https://play.google.com/store/apps/details?id=com.google.ai.edge.gallery).
-    - For users outside the US: install the apk from the [**latest release**](https://github.com/google-ai-edge/gallery/releases/latest/)
-1.  **Install & Explore:** For detailed installation instructions (including for corporate devices) and a full user guide, head over to our [**Project Wiki**](https://github.com/google-ai-edge/gallery/wiki)!
+1. **Check OS Requirement**: Android 12 and up
+2.  **Download the App:**
+    - Install the app from [Google Play](https://play.google.com/store/apps/details?id=com.google.ai.edge.gallery).
+    - For users without Google Play access: install the apk from the [**latest release**](https://github.com/google-ai-edge/gallery/releases/latest/)
+3.  **Install & Explore:** For detailed installation instructions (including for corporate devices) and a full user guide, head over to our [**Project Wiki**](https://github.com/google-ai-edge/gallery/wiki)!
 
 ## 🛠️ Technology Highlights
 

@@ -72,8 +72,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
       // Run inference.
       val instance = model.instance as LlmModelInstance
-      var prefillTokens = instance.session.sizeInTokens(input)
-      prefillTokens += images.size * 257
+      var prefillTokens = images.size * 257
       val audioClips: MutableList<ByteArray> = mutableListOf()
       for (audioMessage in audioMessages) {
         audioClips.add(audioMessage.genByteArrayForWav())
@@ -102,6 +101,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
             if (firstRun) {
               firstTokenTs = System.currentTimeMillis()
               timeToFirstToken = (firstTokenTs - start) / 1000f
+              prefillTokens += instance.conversation.getBenchmarkInfo().lastPrefillTokenCount
               prefillSpeed = prefillTokens / timeToFirstToken
               firstRun = false
               setPreparing(false)
@@ -182,7 +182,7 @@ open class LlmChatViewModelBase() : ChatViewModel() {
     viewModelScope.launch(Dispatchers.Default) {
       setInProgress(false)
       val instance = model.instance as LlmModelInstance
-      instance.session.cancelGenerateResponseAsync()
+      instance.conversation.cancelProcess()
     }
   }
 
@@ -194,7 +194,17 @@ open class LlmChatViewModelBase() : ChatViewModel() {
 
       while (true) {
         try {
-          LlmChatModelHelper.resetSession(task = task, model = model)
+          val supportImage =
+            model.llmSupportImage &&
+              task.id == com.google.ai.edge.gallery.data.BuiltInTaskId.LLM_ASK_IMAGE
+          val supportAudio =
+            model.llmSupportAudio &&
+              task.id == com.google.ai.edge.gallery.data.BuiltInTaskId.LLM_ASK_AUDIO
+          LlmChatModelHelper.resetConversation(
+            model = model,
+            supportImage = supportImage,
+            supportAudio = supportAudio,
+          )
           break
         } catch (e: Exception) {
           Log.d(TAG, "Failed to reset session. Trying again")

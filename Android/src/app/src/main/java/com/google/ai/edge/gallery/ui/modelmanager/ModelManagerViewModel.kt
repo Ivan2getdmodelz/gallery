@@ -70,7 +70,7 @@ import org.json.JSONObject
 
 private const val TAG = "AGModelManagerViewModel"
 private const val TEXT_INPUT_HISTORY_MAX_SIZE = 50
-private const val MODEL_ALLOWLIST_VERSION = "1_0_5"
+private const val MODEL_ALLOWLIST_VERSION = "1_0_7"
 private const val MODEL_ALLOWLIST_FILENAME = "model_allowlist_$MODEL_ALLOWLIST_VERSION.json"
 
 data class ModelInitializationStatus(
@@ -127,6 +127,11 @@ data class ModelManagerUiState(
   fun isModelInitialized(model: Model): Boolean {
     return modelInitializationStatus[model.name]?.status ==
       ModelInitializationStatusType.INITIALIZED
+  }
+
+  fun isModelInitializing(model: Model): Boolean {
+    return modelInitializationStatus[model.name]?.status ==
+      ModelInitializationStatusType.INITIALIZING
   }
 }
 
@@ -528,7 +533,7 @@ constructor(
     val tokenData = dataStoreRepository.readAccessTokenData()
 
     // Token exists.
-    if (tokenData != null) {
+    if (tokenData != null && tokenData.accessToken.isNotEmpty()) {
       Log.d(TAG, "Token exists and loaded.")
 
       // Check expiration (with 5-minute buffer).
@@ -758,7 +763,7 @@ constructor(
       try {
         Log.d(TAG, "Loading model allowlist from local assets")
 
-        val jsonString = context.assets.open("model_allowlist_1_0_4.json")
+        val jsonString = context.assets.open(MODEL_ALLOWLIST_FILENAME)
           .bufferedReader()
           .use { it.readText() }
 
@@ -775,13 +780,31 @@ constructor(
 
         // Convert models in the allowlist.
         val curTasks = customTasks.map { it.task }
+        val nameToModel = mutableMapOf<String, Model>()
         for (allowedModel in modelAllowlist.models) {
-          if (allowedModel.disabled == true) continue
+          if (allowedModel.disabled == true) {
+            continue
+          }
 
           val model = allowedModel.toModel()
+          nameToModel.put(model.name, model)
           for (taskType in allowedModel.taskTypes) {
             val task = curTasks.find { it.id == taskType }
             task?.models?.add(model)
+          }
+        }
+
+        // Find models from allowlist if a task's `modelNames` field is not empty.
+        for (task in curTasks) {
+          if (task.modelNames.isNotEmpty()) {
+            for (modelName in task.modelNames) {
+              val model = nameToModel[modelName]
+              if (model == null) {
+                Log.w(TAG, "Model '${modelName}' in task '${task.label}' not found in allowlist.")
+                continue
+              }
+              task.models.add(model)
+            }
           }
         }
 
@@ -799,6 +822,15 @@ constructor(
           uiState.value.copy(loadingModelAllowlistError = "Error loading local model allowlist")
         }
       }
+    }
+  }
+
+  fun clearLoadModelAllowlistError() {
+    val curTasks = customTasks.map { it.task }
+    processTasks()
+    _uiState.update {
+      createUiState()
+        .copy(loadingModelAllowlist = false, tasks = curTasks, loadingModelAllowlistError = "")
     }
   }
 
@@ -838,6 +870,10 @@ constructor(
   }
 
   private fun isModelPartiallyDownloaded(model: Model): Boolean {
+    if (model.localModelFilePathOverride.isNotEmpty()) {
+      return false
+    }
+
     // A model is partially downloaded when the tmp file exists.
     val tmpFilePath =
       model.getPath(context = context, fileName = "${model.downloadFileName}.$TMP_FILE_EXT")
@@ -1005,6 +1041,11 @@ constructor(
     }
   }
 
+  private fun isFileInDataLocalTmpDir(fileName: String): Boolean {
+    val file = File("/data/local/tmp", fileName)
+    return file.exists()
+  }
+
   private fun deleteFileFromExternalFilesDir(fileName: String) {
     if (isFileInExternalFilesDir(fileName)) {
       val file = File(externalFilesDir, fileName)
@@ -1031,12 +1072,15 @@ constructor(
   }
 
   private fun isModelDownloaded(model: Model): Boolean {
+    val modelRelativePath =
+      listOf(model.normalizedName, model.version, model.downloadFileName)
+        .joinToString(File.separator)
     val downloadedFileExists =
       model.downloadFileName.isNotEmpty() &&
-        isFileInExternalFilesDir(
-          listOf(model.normalizedName, model.version, model.downloadFileName)
-            .joinToString(File.separator)
-        )
+        ((model.localModelFilePathOverride.isEmpty() &&
+          isFileInExternalFilesDir(modelRelativePath)) ||
+          (model.localModelFilePathOverride.isNotEmpty() &&
+            File(model.localModelFilePathOverride).exists()))
 
     val unzippedDirectoryExists =
       model.isZip &&

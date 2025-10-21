@@ -41,10 +41,11 @@ data class AllowedModel(
   val llmSupportImage: Boolean? = null,
   val llmSupportAudio: Boolean? = null,
   val bestForTaskTypes: List<String>? = null,
+  val localModelFilePathOverride: String? = null,
 ) {
   fun toModel(): Model {
     // Construct HF download url.
-    val downloadUrl = "https://huggingface.co/$modelId/resolve/main/$modelFile?download=true"
+    val downloadUrl = "https://huggingface.co/$modelId/resolve/$commitHash/$modelFile?download=true"
 
     // Config.
     val isLlmModel =
@@ -103,6 +104,7 @@ data class AllowedModel(
       llmSupportImage = llmSupportImage == true,
       llmSupportAudio = llmSupportAudio == true,
       bestForTaskIds = bestForTaskTypes ?: listOf(),
+      localModelFilePathOverride = localModelFilePathOverride ?: "",
     )
   }
 

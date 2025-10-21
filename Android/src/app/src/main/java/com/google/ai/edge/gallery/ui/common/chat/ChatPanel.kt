@@ -16,20 +16,25 @@
 
 package com.google.ai.edge.gallery.ui.common.chat
 
-// import com.google.ai.edge.gallery.ui.preview.PreviewChatModel
-// import com.google.ai.edge.gallery.ui.preview.PreviewModelManagerViewModel
-// import com.google.ai.edge.gallery.ui.preview.TASK_TEST1
-// import com.google.ai.edge.gallery.ui.theme.GalleryTheme
 import android.content.ClipData
 import android.graphics.Bitmap
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.VisibilityThreshold
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.ime
@@ -40,6 +45,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -69,7 +75,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
@@ -82,21 +88,23 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.dimensionResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import com.google.ai.edge.gallery.R
 import com.google.ai.edge.gallery.data.BuiltInTaskId
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.Task
+import com.google.ai.edge.gallery.ui.common.AudioAnimation
 import com.google.ai.edge.gallery.ui.common.ErrorDialog
 import com.google.ai.edge.gallery.ui.modelmanager.ModelInitializationStatusType
 import com.google.ai.edge.gallery.ui.modelmanager.ModelManagerViewModel
 import com.google.ai.edge.gallery.ui.theme.customColors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-
-enum class ChatInputType {
-  TEXT,
-  IMAGE,
-}
 
 /** Composable function for the main chat panel, displaying messages and handling user input. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -106,6 +114,7 @@ fun ChatPanel(
   task: Task,
   selectedModel: Model,
   viewModel: ChatViewModel,
+  innerPadding: PaddingValues,
   onSendMessage: (Model, List<ChatMessage>) -> Unit,
   onRunAgainClicked: (Model, ChatMessage) -> Unit,
   onBenchmarkClicked: (Model, ChatMessage, warmUpIterations: Int, benchmarkIterations: Int) -> Unit,
@@ -115,7 +124,6 @@ fun ChatPanel(
   onStreamEnd: (Int) -> Unit = {},
   onStopButtonClicked: () -> Unit = {},
   onImageSelected: (bitmaps: List<Bitmap>, selectedBitmapIndex: Int) -> Unit = { _, _ -> },
-  chatInputType: ChatInputType = ChatInputType.TEXT,
   showStopButtonInInputWhenInProgress: Boolean = false,
 ) {
   val uiState by viewModel.uiState.collectAsState()
@@ -166,6 +174,9 @@ fun ChatPanel(
 
   var showErrorDialog by remember { mutableStateOf(false) }
 
+  var showAudioRecorder by remember { mutableStateOf(false) }
+  var curAmplitude by remember { mutableIntStateOf(0) }
+
   // Keep track of the last message and last message content.
   val lastMessage: MutableState<ChatMessage?> = remember { mutableStateOf(null) }
   val lastMessageContent: MutableState<String> = remember { mutableStateOf("") }
@@ -180,33 +191,33 @@ fun ChatPanel(
     mutableStateOf(mapOf())
   }
 
+  // Scroll to bottom when IME is toggled.
+  LaunchedEffect(WindowInsets.ime.getBottom(density)) {
+    scrollToBottom(listState = listState, animate = true)
+  }
+
   // Scroll the content to the bottom when any of these changes.
   LaunchedEffect(
     messages.size,
     lastMessage.value,
     lastMessageContent.value,
-    WindowInsets.ime.getBottom(density),
+    lastMessage.value?.latencyMs,
   ) {
-    // Only scroll if showingStatsByModel is not changed. In other words, when showingStatsByModel
-    // changes we want the display to not scroll.
     if (messages.isNotEmpty()) {
-      if (uiState.showingStatsByModel === lastShowingStatsByModel.value) {
-        if (!listState.canScrollForward) {
-          listState.animateScrollToItem(messages.lastIndex, scrollOffset = 10000)
-        }
-      } else {
-        // Scroll to bottom if the message to show stats is the last message.
-        val curShowingStats =
-          uiState.showingStatsByModel[selectedModel.name]?.toMutableSet() ?: mutableSetOf()
-        val lastShowingStats = lastShowingStatsByModel.value[selectedModel.name] ?: mutableSetOf()
-        curShowingStats.removeAll(lastShowingStats)
-        if (curShowingStats.isNotEmpty()) {
-          val index =
-            viewModel.getMessageIndex(model = selectedModel, message = curShowingStats.first())
-          if (index == messages.size - 2) {
-            listState.animateScrollToItem(messages.lastIndex, scrollOffset = 10000)
-          }
-        }
+      val lastVisibleItem = listState.layoutInfo.visibleItemsInfo.last()
+      // Determines if an automatic scroll is necessary. It is true if:
+      // 1. The last item is not yet fully visible
+      // OR
+      // 2. The scroll position is close to the bottom (within 90 pixels of the end offset. 90 is
+      //    slightly taller than the "show stats" chip).
+      val canScroll =
+        lastVisibleItem.index < messages.size - 1 ||
+          lastVisibleItem.offset + lastVisibleItem.size - listState.layoutInfo.viewportEndOffset <
+            90
+      // Only scroll if showingStatsByModel is not changed. In other words, when showingStatsByModel
+      // changes we want the display to not scroll.
+      if (uiState.showingStatsByModel === lastShowingStatsByModel.value && canScroll) {
+        scrollToBottom(listState = listState, animate = true)
       }
     }
     lastShowingStatsByModel.value = uiState.showingStatsByModel
@@ -233,237 +244,288 @@ fun ChatPanel(
     showErrorDialog = modelInitializationStatus?.status == ModelInitializationStatusType.ERROR
   }
 
-  Column(modifier = modifier.imePadding()) {
-    Box(contentAlignment = Alignment.BottomCenter, modifier = Modifier.weight(1f)) {
-      LazyColumn(
-        modifier = Modifier.fillMaxSize().nestedScroll(nestedScrollConnection),
-        state = listState,
-        verticalArrangement = Arrangement.Top,
-      ) {
-        items(messages) { message ->
-          val imageHistoryCurIndex = remember { mutableIntStateOf(0) }
-          var hAlign: Alignment.Horizontal = Alignment.End
-          var backgroundColor: Color = MaterialTheme.customColors.userBubbleBgColor
-          var hardCornerAtLeftOrRight = false
-          var extraPaddingStart = 48.dp
-          var extraPaddingEnd = 0.dp
-          if (message.side == ChatSide.AGENT) {
-            hAlign = Alignment.Start
-            backgroundColor = MaterialTheme.customColors.agentBubbleBgColor
-            hardCornerAtLeftOrRight = true
-            extraPaddingStart = 0.dp
-            extraPaddingEnd = 48.dp
-          } else if (message.side == ChatSide.SYSTEM) {
-            extraPaddingStart = 24.dp
-            extraPaddingEnd = 24.dp
-            if (message.type == ChatMessageType.PROMPT_TEMPLATES) {
-              extraPaddingStart = 12.dp
-              extraPaddingEnd = 12.dp
-            }
-          }
-          if (message.type == ChatMessageType.IMAGE) {
-            backgroundColor = Color.Transparent
-          }
-          val bubbleBorderRadius = dimensionResource(R.dimen.chat_bubble_corner_radius)
-
-          Column(
-            modifier =
-              Modifier.fillMaxWidth()
-                .padding(
-                  start = 12.dp + extraPaddingStart,
-                  end = 12.dp + extraPaddingEnd,
-                  top = 6.dp,
-                  bottom = 6.dp,
-                ),
-            horizontalAlignment = hAlign,
-          ) messageColumn@{
-            // Sender row.
-            var agentName = stringResource(task.agentNameRes)
-            if (message.accelerator.isNotEmpty()) {
-              agentName = "$agentName on ${message.accelerator}"
-            }
-            MessageSender(
-              message = message,
-              agentName = agentName,
-              imageHistoryCurIndex = imageHistoryCurIndex.intValue,
+  Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+    // Audio record animation.
+    AnimatedVisibility(
+      showAudioRecorder,
+      enter =
+        slideInVertically(
+          animationSpec =
+            spring(
+              stiffness = Spring.StiffnessLow,
+              visibilityThreshold = IntOffset.VisibilityThreshold,
             )
+        ) {
+          it
+        } + fadeIn(animationSpec = spring(stiffness = Spring.StiffnessLow)),
+      exit = fadeOut(),
+      modifier = Modifier.graphicsLayer { alpha = 0.8f },
+    ) {
+      AudioAnimation(bgColor = MaterialTheme.colorScheme.surface, amplitude = curAmplitude)
+    }
 
-            // Message body.
-            when (message) {
-              // Loading.
-              is ChatMessageLoading -> MessageBodyLoading()
+    Column(
+      modifier = modifier.padding(innerPadding).consumeWindowInsets(innerPadding).imePadding()
+    ) {
+      Box(contentAlignment = Alignment.BottomCenter, modifier = Modifier.weight(1f)) {
+        val cdChatPanel = stringResource(R.string.cd_chat_panel)
+        LazyColumn(
+          modifier =
+            Modifier.fillMaxSize().nestedScroll(nestedScrollConnection).semantics {
+              contentDescription = cdChatPanel
+            },
+          state = listState,
+          verticalArrangement = Arrangement.Top,
+        ) {
+          items(messages) { message ->
+            val imageHistoryCurIndex = remember { mutableIntStateOf(0) }
+            var hAlign: Alignment.Horizontal = Alignment.End
+            var backgroundColor: Color = MaterialTheme.customColors.userBubbleBgColor
+            var hardCornerAtLeftOrRight = false
+            var extraPaddingStart = 48.dp
+            var extraPaddingEnd = 0.dp
+            if (message.side == ChatSide.AGENT) {
+              hAlign = Alignment.Start
+              backgroundColor = MaterialTheme.customColors.agentBubbleBgColor
+              hardCornerAtLeftOrRight = true
+              extraPaddingStart = 0.dp
+              extraPaddingEnd = 48.dp
+            } else if (message.side == ChatSide.SYSTEM) {
+              extraPaddingStart = 24.dp
+              extraPaddingEnd = 24.dp
+              if (message.type == ChatMessageType.PROMPT_TEMPLATES) {
+                extraPaddingStart = 12.dp
+                extraPaddingEnd = 12.dp
+              }
+            }
+            if (message.type == ChatMessageType.IMAGE) {
+              backgroundColor = Color.Transparent
+            }
+            val bubbleBorderRadius = dimensionResource(R.dimen.chat_bubble_corner_radius)
 
-              // Info.
-              is ChatMessageInfo -> MessageBodyInfo(message = message)
+            Column(
+              modifier =
+                Modifier.fillMaxWidth()
+                  .padding(
+                    start = 12.dp + extraPaddingStart,
+                    end = 12.dp + extraPaddingEnd,
+                    top = 6.dp,
+                    bottom = 6.dp,
+                  ),
+              horizontalAlignment = hAlign,
+            ) messageColumn@{
+              // Sender row.
+              var agentName = stringResource(task.agentNameRes)
+              if (message.accelerator.isNotEmpty()) {
+                agentName = "$agentName on ${message.accelerator}"
+              }
+              MessageSender(
+                message = message,
+                agentName = agentName,
+                imageHistoryCurIndex = imageHistoryCurIndex.intValue,
+              )
 
-              // Warning
-              is ChatMessageWarning -> MessageBodyWarning(message = message)
+              // Message body.
+              when (message) {
+                // Loading.
+                is ChatMessageLoading -> MessageBodyLoading()
 
-              // Config values change.
-              is ChatMessageConfigValuesChange -> MessageBodyConfigUpdate(message = message)
+                // Info.
+                is ChatMessageInfo -> MessageBodyInfo(message = message)
 
-              // Prompt templates.
-              is ChatMessagePromptTemplates ->
-                MessageBodyPromptTemplates(
-                  message = message,
-                  task = task,
-                  onPromptClicked = { template ->
-                    onSendMessage(
-                      selectedModel,
-                      listOf(ChatMessageText(content = template.prompt, side = ChatSide.USER)),
-                    )
-                  },
-                )
+                // Warning
+                is ChatMessageWarning -> MessageBodyWarning(message = message)
 
-              // Non-system messages.
-              else -> {
-                // The bubble shape around the message body.
-                var messageBubbleModifier: Modifier = Modifier
-                // Use a rounded rectangle clip for multi-image image message.
-                if (message is ChatMessageImage && message.bitmaps.size > 1) {
-                  messageBubbleModifier = messageBubbleModifier.clip(RoundedCornerShape(6.dp))
-                }
-                // For other messages, use a bubble shape to clip.
-                else {
-                  messageBubbleModifier =
-                    messageBubbleModifier.clip(
-                      MessageBubbleShape(
-                        radius = bubbleBorderRadius,
-                        hardCornerAtLeftOrRight = hardCornerAtLeftOrRight,
+                // Config values change.
+                is ChatMessageConfigValuesChange -> MessageBodyConfigUpdate(message = message)
+
+                // Prompt templates.
+                is ChatMessagePromptTemplates ->
+                  MessageBodyPromptTemplates(
+                    message = message,
+                    task = task,
+                    onPromptClicked = { template ->
+                      onSendMessage(
+                        selectedModel,
+                        listOf(ChatMessageText(content = template.prompt, side = ChatSide.USER)),
                       )
-                    )
-                }
-                messageBubbleModifier = messageBubbleModifier.background(backgroundColor)
-                if (message is ChatMessageText) {
-                  messageBubbleModifier =
-                    messageBubbleModifier.pointerInput(Unit) {
-                      detectTapGestures(
-                        onLongPress = {
-                          haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                          longPressedMessage.value = message
-                          showMessageLongPressedSheet = true
-                        }
-                      )
-                    }
-                }
-                Box(modifier = messageBubbleModifier) {
-                  when (message) {
-                    // Text
-                    is ChatMessageText -> MessageBodyText(message = message)
+                    },
+                  )
 
-                    // Image
-                    is ChatMessageImage -> {
-                      MessageBodyImage(message = message, onImageClicked = onImageSelected)
-                    }
-
-                    // Image with history (for image gen)
-                    is ChatMessageImageWithHistory ->
-                      MessageBodyImageWithHistory(
-                        message = message,
-                        imageHistoryCurIndex = imageHistoryCurIndex,
-                      )
-
-                    // Audio clip.
-                    is ChatMessageAudioClip -> MessageBodyAudioClip(message = message)
-
-                    // Classification result
-                    is ChatMessageClassification ->
-                      MessageBodyClassification(
-                        message = message,
-                        modifier =
-                          Modifier.width(message.maxBarWidth ?: CLASSIFICATION_BAR_MAX_WIDTH),
-                      )
-
-                    // Benchmark result.
-                    is ChatMessageBenchmarkResult -> MessageBodyBenchmark(message = message)
-
-                    // Benchmark LLM result.
-                    is ChatMessageBenchmarkLlmResult ->
-                      MessageBodyBenchmarkLlm(
-                        message = message,
-                        modifier = Modifier.wrapContentWidth(),
-                      )
-
-                    else -> {}
+                // Non-system messages.
+                else -> {
+                  // The bubble shape around the message body.
+                  var messageBubbleModifier: Modifier = Modifier
+                  // Use a rounded rectangle clip for multi-image image message.
+                  if (message is ChatMessageImage && message.bitmaps.size > 1) {
+                    messageBubbleModifier = messageBubbleModifier.clip(RoundedCornerShape(6.dp))
                   }
-                }
+                  // For other messages, use a bubble shape to clip.
+                  else {
+                    messageBubbleModifier =
+                      messageBubbleModifier.clip(
+                        MessageBubbleShape(
+                          radius = bubbleBorderRadius,
+                          hardCornerAtLeftOrRight = hardCornerAtLeftOrRight,
+                        )
+                      )
+                  }
+                  messageBubbleModifier = messageBubbleModifier.background(backgroundColor)
+                  if (message is ChatMessageText) {
+                    messageBubbleModifier =
+                      messageBubbleModifier.pointerInput(Unit) {
+                        detectTapGestures(
+                          onLongPress = {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            longPressedMessage.value = message
+                            showMessageLongPressedSheet = true
+                          }
+                        )
+                      }
+                  }
+                  Box(modifier = messageBubbleModifier) {
+                    when (message) {
+                      // Text
+                      is ChatMessageText ->
+                        MessageBodyText(message = message, inProgress = uiState.inProgress)
 
-                if (message.side == ChatSide.AGENT) {
-                  Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                  ) {
-                    LatencyText(message = message)
-                    // A button to show stats for the LLM message.
-                    if (
-                      task.id.startsWith("llm_") &&
-                        message is ChatMessageText
-                        // This means we only want to show the action button when the message is
-                        // done
-                        // generating, at which point the latency will be set.
-                        &&
-                        message.latencyMs >= 0
+                      // Image
+                      is ChatMessageImage -> {
+                        MessageBodyImage(message = message, onImageClicked = onImageSelected)
+                      }
+
+                      // Image with history (for image gen)
+                      is ChatMessageImageWithHistory ->
+                        MessageBodyImageWithHistory(
+                          message = message,
+                          imageHistoryCurIndex = imageHistoryCurIndex,
+                        )
+
+                      // Audio clip.
+                      is ChatMessageAudioClip -> MessageBodyAudioClip(message = message)
+
+                      // Classification result
+                      is ChatMessageClassification ->
+                        MessageBodyClassification(
+                          message = message,
+                          modifier =
+                            Modifier.width(message.maxBarWidth ?: CLASSIFICATION_BAR_MAX_WIDTH),
+                        )
+
+                      // Benchmark result.
+                      is ChatMessageBenchmarkResult -> MessageBodyBenchmark(message = message)
+
+                      // Benchmark LLM result.
+                      is ChatMessageBenchmarkLlmResult ->
+                        MessageBodyBenchmarkLlm(
+                          message = message,
+                          modifier = Modifier.wrapContentWidth(),
+                        )
+
+                      else -> {}
+                    }
+                  }
+
+                  if (message.side == ChatSide.AGENT) {
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
-                      val showingStats =
-                        viewModel.isShowingStats(model = selectedModel, message = message)
-                      MessageActionButton(
-                        label = if (showingStats) "Hide stats" else "Show stats",
-                        icon = Icons.Outlined.Timer,
-                        onClick = {
-                          // Toggle showing stats.
-                          viewModel.toggleShowingStats(selectedModel, message)
+                      LatencyText(message = message)
+                      // A button to show stats for the LLM message.
+                      if (
+                        task.id.startsWith("llm_") &&
+                          message is ChatMessageText
+                          // This means we only want to show the action button when the message is
+                          // done
+                          // generating, at which point the latency will be set.
+                          &&
+                          message.latencyMs >= 0
+                      ) {
+                        val showingStats =
+                          viewModel.isShowingStats(model = selectedModel, message = message)
+                        MessageActionButton(
+                          label = if (showingStats) "Hide stats" else "Show stats",
+                          icon = Icons.Outlined.Timer,
+                          onClick = {
+                            // Toggle showing stats.
+                            viewModel.toggleShowingStats(selectedModel, message)
 
-                          // Add the stats message after the LLM message.
-                          if (viewModel.isShowingStats(model = selectedModel, message = message)) {
-                            val llmBenchmarkResult = message.llmBenchmarkResult
-                            if (llmBenchmarkResult != null) {
-                              viewModel.insertMessageAfter(
-                                model = selectedModel,
-                                anchorMessage = message,
-                                messageToAdd = llmBenchmarkResult,
-                              )
+                            // Add the stats message after the LLM message.
+                            if (
+                              viewModel.isShowingStats(model = selectedModel, message = message)
+                            ) {
+                              val llmBenchmarkResult = message.llmBenchmarkResult
+                              val isLastMessage =
+                                viewModel.getMessageIndex(
+                                  model = selectedModel,
+                                  message = message,
+                                ) == messages.lastIndex
+                              if (llmBenchmarkResult != null) {
+                                viewModel.insertMessageAfter(
+                                  model = selectedModel,
+                                  anchorMessage = message,
+                                  messageToAdd = llmBenchmarkResult,
+                                )
+                                // Scroll to bottom if showing the stats for the last message.
+                                if (isLastMessage) {
+                                  scope.launch {
+                                    delay(100L)
+                                    scrollToBottom(listState = listState, animate = true)
+                                  }
+                                }
+                              }
                             }
-                          }
-                          // Remove the stats message.
-                          else {
-                            val curMessageIndex =
-                              viewModel.getMessageIndex(model = selectedModel, message = message)
-                            viewModel.removeMessageAt(
-                              model = selectedModel,
-                              index = curMessageIndex + 1,
-                            )
-                          }
-                        },
-                        enabled = !uiState.inProgress,
-                      )
+                            // Remove the stats message.
+                            else {
+                              // `message` here is the one before the stats message to be removed.
+                              val curMessageIndex =
+                                viewModel.getMessageIndex(model = selectedModel, message = message)
+                              val isLastMessage = curMessageIndex == messages.lastIndex - 1
+                              viewModel.removeMessageAt(
+                                model = selectedModel,
+                                index = curMessageIndex + 1,
+                              )
+                              // Scroll to bottom if hiding the stats for the last message.
+                              if (isLastMessage) {
+                                scope.launch {
+                                  delay(100L)
+                                  scrollToBottom(listState = listState, animate = true)
+                                }
+                              }
+                            }
+                          },
+                          enabled = !uiState.inProgress,
+                        )
+                      }
                     }
-                  }
-                } else if (message.side == ChatSide.USER) {
-                  Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                  ) {
-                    // Run again button.
-                    if (selectedModel.showRunAgainButton) {
-                      MessageActionButton(
-                        label = stringResource(R.string.run_again),
-                        icon = Icons.Rounded.Refresh,
-                        onClick = { onRunAgainClicked(selectedModel, message) },
-                        enabled = !uiState.inProgress,
-                      )
-                    }
+                  } else if (message.side == ChatSide.USER) {
+                    Row(
+                      verticalAlignment = Alignment.CenterVertically,
+                      horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                      // Run again button.
+                      if (selectedModel.showRunAgainButton) {
+                        MessageActionButton(
+                          label = stringResource(R.string.run_again),
+                          icon = Icons.Rounded.Refresh,
+                          onClick = { onRunAgainClicked(selectedModel, message) },
+                          enabled = !uiState.inProgress,
+                        )
+                      }
 
-                    // Benchmark button
-                    if (selectedModel.showBenchmarkButton) {
-                      MessageActionButton(
-                        label = stringResource(R.string.benchmark),
-                        icon = Icons.Outlined.Timer,
-                        onClick = {
-                          showBenchmarkConfigsDialog = true
-                          benchmarkMessage.value = message
-                        },
-                        enabled = !uiState.inProgress,
-                      )
+                      // Benchmark button
+                      if (selectedModel.showBenchmarkButton) {
+                        MessageActionButton(
+                          label = stringResource(R.string.benchmark),
+                          icon = Icons.Outlined.Timer,
+                          onClick = {
+                            showBenchmarkConfigsDialog = true
+                            benchmarkMessage.value = message
+                          },
+                          enabled = !uiState.inProgress,
+                        )
+                      }
                     }
                   }
                 }
@@ -471,116 +533,98 @@ fun ChatPanel(
             }
           }
         }
-      }
 
-      SnackbarHost(hostState = snackbarHostState, modifier = Modifier.padding(vertical = 4.dp))
+        SnackbarHost(hostState = snackbarHostState, modifier = Modifier.padding(vertical = 4.dp))
 
-      // Show an info message for ask image task to get users started.
-      if (task.id == BuiltInTaskId.LLM_ASK_IMAGE && messages.isEmpty()) {
-        Column(
-          modifier = Modifier.padding(horizontal = 16.dp).fillMaxSize(),
-          horizontalAlignment = Alignment.CenterHorizontally,
-          verticalArrangement = Arrangement.Center,
-        ) {
-          MessageBodyInfo(
-            ChatMessageInfo(
-              content =
-                "To get started, click + below to add images (up to 10 in a single session) and type a prompt to ask a question about it."
-            ),
-            smallFontSize = false,
-          )
+        // Show an info message for ask image task to get users started.
+        if (task.id == BuiltInTaskId.LLM_ASK_IMAGE && messages.isEmpty()) {
+          Column(
+            modifier =
+              Modifier.padding(horizontal = 16.dp).fillMaxSize().semantics(
+                mergeDescendants = true
+              ) {
+                liveRegion = LiveRegionMode.Polite
+              },
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+          ) {
+            MessageBodyInfo(
+              ChatMessageInfo(
+                content =
+                  "To get started, click + below to add images (up to 10 in a single session) and type a prompt to ask a question about it."
+              ),
+              smallFontSize = false,
+            )
+          }
+        }
+        // Show an info message for ask image task to get users started.
+        else if (task.id == BuiltInTaskId.LLM_ASK_AUDIO && messages.isEmpty()) {
+          Column(
+            modifier =
+              Modifier.padding(horizontal = 16.dp).fillMaxSize().semantics(
+                mergeDescendants = true
+              ) {
+                liveRegion = LiveRegionMode.Polite
+              },
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+          ) {
+            MessageBodyInfo(
+              ChatMessageInfo(
+                content =
+                  "To get started, tap the + icon to add your audio clip. Limited to 1 clip up to 30 seconds long."
+              ),
+              smallFontSize = false,
+            )
+          }
         }
       }
-      // Show an info message for ask image task to get users started.
-      else if (task.id == BuiltInTaskId.LLM_ASK_AUDIO && messages.isEmpty()) {
-        Column(
-          modifier = Modifier.padding(horizontal = 16.dp).fillMaxSize(),
-          horizontalAlignment = Alignment.CenterHorizontally,
-          verticalArrangement = Arrangement.Center,
-        ) {
-          MessageBodyInfo(
-            ChatMessageInfo(
-              content =
-                "To get started, tap the + icon to add your audio clip. Limited to 1 clip up to 30 seconds long."
+
+      MessageInputText(
+        task = task,
+        modelManagerViewModel = modelManagerViewModel,
+        curMessage = curMessage,
+        inProgress = uiState.inProgress,
+        isResettingSession = uiState.isResettingSession,
+        modelPreparing = uiState.preparing,
+        imageCount = imageCountToLastConfigChange,
+        audioClipMessageCount = audioClipMesssageCountToLastconfigChange,
+        modelInitializing =
+          modelInitializationStatus?.status == ModelInitializationStatusType.INITIALIZING,
+        textFieldPlaceHolderRes = task.textInputPlaceHolderRes,
+        onValueChanged = { curMessage = it },
+        onSendMessage = {
+          onSendMessage(selectedModel, it)
+          curMessage = ""
+          // Hide software keyboard.
+          focusManager.clearFocus()
+        },
+        onOpenPromptTemplatesClicked = {
+          onSendMessage(
+            selectedModel,
+            listOf(
+              ChatMessagePromptTemplates(
+                templates = selectedModel.llmPromptTemplates,
+                showMakeYourOwn = false,
+              )
             ),
-            smallFontSize = false,
           )
-        }
-      }
-    }
-
-    // Chat input
-    when (chatInputType) {
-      ChatInputType.TEXT -> {
-        //        val isLlmTask = task.type == TaskType.LLM_CHAT
-        //        val notLlmStartScreen = !(messages.size == 1 && messages[0] is
-        // ChatMessagePromptTemplates)
-        MessageInputText(
-          modelManagerViewModel = modelManagerViewModel,
-          curMessage = curMessage,
-          inProgress = uiState.inProgress,
-          isResettingSession = uiState.isResettingSession,
-          modelPreparing = uiState.preparing,
-          imageCount = imageCountToLastConfigChange,
-          audioClipMessageCount = audioClipMesssageCountToLastconfigChange,
-          modelInitializing =
-            modelInitializationStatus?.status == ModelInitializationStatusType.INITIALIZING,
-          textFieldPlaceHolderRes = task.textInputPlaceHolderRes,
-          onValueChanged = { curMessage = it },
-          onSendMessage = {
-            onSendMessage(selectedModel, it)
-            curMessage = ""
-          },
-          onOpenPromptTemplatesClicked = {
-            onSendMessage(
-              selectedModel,
-              listOf(
-                ChatMessagePromptTemplates(
-                  templates = selectedModel.llmPromptTemplates,
-                  showMakeYourOwn = false,
-                )
-              ),
-            )
-          },
-          onStopButtonClicked = onStopButtonClicked,
-          //          showPromptTemplatesInMenu = isLlmTask && notLlmStartScreen,
-          showPromptTemplatesInMenu = false,
-          showImagePickerInMenu =
-            selectedModel.llmSupportImage && task.id === BuiltInTaskId.LLM_ASK_IMAGE,
-          showAudioItemsInMenu =
-            selectedModel.llmSupportAudio && task.id === BuiltInTaskId.LLM_ASK_AUDIO,
-          showStopButtonWhenInProgress = showStopButtonInInputWhenInProgress,
-        )
-      }
-
-      ChatInputType.IMAGE ->
-        MessageInputImage(
-          disableButtons = uiState.inProgress,
-          streamingMessage = streamingMessage,
-          onImageSelected = { bitmap ->
-            onSendMessage(
-              selectedModel,
-              listOf(
-                ChatMessageImage(
-                  bitmaps = listOf(bitmap),
-                  imageBitMaps = listOf(bitmap.asImageBitmap()),
-                  side = ChatSide.USER,
-                )
-              ),
-            )
-          },
-          onStreamImage = { bitmap ->
-            onStreamImageMessage(
-              selectedModel,
-              ChatMessageImage(
-                bitmaps = listOf(bitmap),
-                imageBitMaps = listOf(bitmap.asImageBitmap()),
-                side = ChatSide.USER,
-              ),
-            )
-          },
-          onStreamEnd = onStreamEnd,
-        )
+        },
+        onStopButtonClicked = onStopButtonClicked,
+        onSetAudioRecorderVisible = { start ->
+          showAudioRecorder = start
+          if (!showAudioRecorder) {
+            curAmplitude = 0
+          }
+        },
+        onAmplitudeChanged = { curAmplitude = it },
+        showPromptTemplatesInMenu = false,
+        showImagePickerInMenu =
+          selectedModel.llmSupportImage && task.id === BuiltInTaskId.LLM_ASK_IMAGE,
+        showAudioItemsInMenu =
+          selectedModel.llmSupportAudio && task.id === BuiltInTaskId.LLM_ASK_AUDIO,
+        showStopButtonWhenInProgress = showStopButtonInInputWhenInProgress,
+      )
     }
   }
 
@@ -639,7 +683,7 @@ fun ChatPanel(
             ) {
               Icon(
                 Icons.Rounded.ContentCopy,
-                contentDescription = "",
+                contentDescription = stringResource(R.string.cd_copy_to_clipboard_icon),
                 modifier = Modifier.size(18.dp),
               )
               Text("Copy text")
@@ -651,21 +695,13 @@ fun ChatPanel(
   }
 }
 
-// @Preview(showBackground = true)
-// @Composable
-// fun ChatPanelPreview() {
-//   GalleryTheme {
-//     val context = LocalContext.current
-//     val task = TASK_TEST1
-//     ChatPanel(
-//       modelManagerViewModel = PreviewModelManagerViewModel(context = LocalContext.current),
-//       task = task,
-//       selectedModel = TASK_TEST1.models[1],
-//       viewModel = PreviewChatModel(context = context),
-//       navigateUp = {},
-//       onSendMessage = { _, _ -> },
-//       onRunAgainClicked = { _, _ -> },
-//       onBenchmarkClicked = { _, _, _, _ -> },
-//     )
-//   }
-// }
+private suspend fun scrollToBottom(listState: LazyListState, animate: Boolean = false) {
+  val itemCount = listState.layoutInfo.totalItemsCount
+  if (itemCount > 0) {
+    if (animate) {
+      listState.animateScrollToItem(itemCount - 1, scrollOffset = 10000)
+    } else {
+      listState.scrollToItem(itemCount - 1, scrollOffset = 10000)
+    }
+  }
+}

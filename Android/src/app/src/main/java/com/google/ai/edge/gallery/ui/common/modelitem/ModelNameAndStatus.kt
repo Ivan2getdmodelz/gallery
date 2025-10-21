@@ -91,7 +91,7 @@ fun ModelNameAndStatus(
           Icon(
             Icons.Filled.Star,
             tint = Color(0xFFFCC934),
-            contentDescription = "",
+            contentDescription = null,
             modifier = Modifier.size(18.dp),
           )
           Text(
@@ -105,7 +105,7 @@ fun ModelNameAndStatus(
 
       // Model name and action buttons.
       Text(
-        model.name,
+        model.displayName.ifEmpty { model.name },
         maxLines = 1,
         overflow = TextOverflow.MiddleEllipsis,
         style = MaterialTheme.typography.titleMedium,
@@ -210,7 +210,7 @@ fun ModelNameAndStatus(
       }
 
       // Learn more url.
-      if (!model.imported) {
+      if (!model.imported && model.learnMoreUrl.isNotEmpty()) {
         Row(
           verticalAlignment = Alignment.CenterVertically,
           modifier =
@@ -222,7 +222,7 @@ fun ModelNameAndStatus(
           Icon(
             Icons.AutoMirrored.Outlined.OpenInNew,
             tint = MaterialTheme.customColors.modelInfoIconColor,
-            contentDescription = "",
+            contentDescription = null,
             modifier = Modifier.size(MODEL_INFO_ICON_SIZE).offset(y = 1.dp),
           )
           ClickableLink(model.learnMoreUrl, linkText = stringResource(R.string.learn_more))

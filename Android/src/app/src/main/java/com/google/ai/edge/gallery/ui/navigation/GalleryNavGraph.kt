@@ -34,7 +34,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -49,7 +48,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.zIndex
 import androidx.core.os.bundleOf
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -116,7 +114,7 @@ private fun AnimatedContentTransitionScope<*>.slideExit(): ExitTransition {
 fun GalleryNavHost(
   navController: NavHostController,
   modifier: Modifier = Modifier,
-  modelManagerViewModel: ModelManagerViewModel = hiltViewModel(),
+  modelManagerViewModel: ModelManagerViewModel,
 ) {
   val lifecycleOwner = LocalLifecycleOwner.current
   var showModelManager by remember { mutableStateOf(false) }
@@ -180,10 +178,12 @@ fun GalleryNavHost(
     startDestination = ROUTE_PLACEHOLDER,
     enterTransition = { EnterTransition.None },
     exitTransition = { ExitTransition.None },
-    modifier = modifier.zIndex(1f),
   ) {
     // Placeholder root screen
-    composable(route = ROUTE_PLACEHOLDER) { Text("") }
+    //
+    // Having a non-empty placeholder here is needed to make the exit transition below work.
+    // We can't have an empty Text here because it will block TalkBack.
+    composable(route = ROUTE_PLACEHOLDER) { Box {} }
 
     composable(
       route = "$ROUTE_MODEL/{taskId}/{modelName}",
@@ -211,16 +211,19 @@ fun GalleryNavHost(
                 )
             )
           } else {
+            var disableAppBarControls by remember { mutableStateOf(false) }
             CustomTaskScreen(
               task = customTask.task,
               modelManagerViewModel = modelManagerViewModel,
               onNavigateUp = { navController.navigateUp() },
+              disableAppBarControls = disableAppBarControls,
             ) { bottomPadding ->
               customTask.MainScreen(
                 data =
                   CustomTaskData(
                     modelManagerViewModel = modelManagerViewModel,
                     bottomPadding = bottomPadding,
+                    setAppBarControlsDisabled = { disableAppBarControls = it },
                   )
               )
             }
@@ -237,10 +240,14 @@ fun GalleryNavHost(
     intent.data = null
     Log.d(TAG, "navigation link clicked: $data")
     if (data.toString().startsWith("com.google.ai.edge.gallery://model/")) {
-      val taskId = data.pathSegments.get(data.pathSegments.size - 2)
-      val modelName = data.pathSegments.last()
-      modelManagerViewModel.getModelByName(name = modelName)?.let { model ->
-        navController.navigate("$ROUTE_MODEL/${taskId}/${model.name}")
+      if (data.pathSegments.size >= 2) {
+        val taskId = data.pathSegments.get(data.pathSegments.size - 2)
+        val modelName = data.pathSegments.last()
+        modelManagerViewModel.getModelByName(name = modelName)?.let { model ->
+          navController.navigate("$ROUTE_MODEL/${taskId}/${model.name}")
+        }
+      } else {
+        Log.e(TAG, "Malformed deep link URI received: $data")
       }
     }
   }
@@ -250,6 +257,7 @@ fun GalleryNavHost(
 private fun CustomTaskScreen(
   task: Task,
   modelManagerViewModel: ModelManagerViewModel,
+  disableAppBarControls: Boolean,
   onNavigateUp: () -> Unit,
   content: @Composable (bottomPadding: Dp) -> Unit,
 ) {
@@ -300,8 +308,8 @@ private fun CustomTaskScreen(
         task = task,
         model = selectedModel,
         modelManagerViewModel = modelManagerViewModel,
-        inProgress = false,
-        modelPreparing = false,
+        inProgress = disableAppBarControls,
+        modelPreparing = disableAppBarControls,
         canShowResetSessionButton = false,
         onConfigChanged = { _, _ -> },
         onBackClicked = { handleNavigateUp() },

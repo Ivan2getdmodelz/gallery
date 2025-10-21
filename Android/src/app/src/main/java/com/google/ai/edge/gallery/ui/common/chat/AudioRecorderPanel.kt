@@ -25,19 +25,18 @@ import android.util.Log
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Mic
-import androidx.compose.material.icons.rounded.Stop
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -46,7 +45,6 @@ import androidx.compose.runtime.MutableLongState
 import androidx.compose.runtime.MutableState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,19 +54,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import com.google.ai.edge.gallery.R
+import com.google.ai.edge.gallery.common.calculatePeakAmplitude
 import com.google.ai.edge.gallery.data.MAX_AUDIO_CLIP_DURATION_SEC
 import com.google.ai.edge.gallery.data.SAMPLE_RATE
+import com.google.ai.edge.gallery.data.Task
+import com.google.ai.edge.gallery.ui.common.getTaskIconColor
 import com.google.ai.edge.gallery.ui.theme.customColors
 import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
-import kotlin.math.abs
-import kotlin.math.pow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -77,14 +76,32 @@ private const val TAG = "AGAudioRecorderPanel"
 
 private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
 private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
+private const val PANEL_ALPHA = 0.7f
 
 /**
- * A Composable that provides an audio recording panel. It allows users to record audio clips,
- * displays the recording duration and a live amplitude visualization, and provides options to play
- * back the recorded clip or send it.
+ * This composable function creates a UI panel for audio recording. It handles the UI state (e.g.,
+ * recording vs. idle) and manages the audio recording lifecycle.
+ *
+ * The panel displays different content based on the recording state:
+ * - When idle, it shows a "Tap to record" message and a microphone icon.
+ * - When recording, it shows a red indicator, elapsed time, and an "up arrow" icon button to send
+ *   the clip.
+ *
+ * Tapping the record button starts a coroutine to handle audio capture on a background thread.
+ * Tapping the "up arrow" button stops the recording, passes the audio data via the onSendAudioClip
+ * callback, and resets the state.
+ *
+ * A DisposableEffect is used to ensure the AudioRecord resource is properly released when the
+ * composable is removed from the UI hierarchy.
  */
 @Composable
-fun AudioRecorderPanel(onSendAudioClip: (ByteArray) -> Unit) {
+fun AudioRecorderPanel(
+  task: Task,
+  onAmplitudeChanged: (Int /* 0-32767 */) -> Unit,
+  onSendAudioClip: (ByteArray) -> Unit,
+  onClose: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
   val context = LocalContext.current
   val coroutineScope = rememberCoroutineScope()
 
@@ -92,147 +109,109 @@ fun AudioRecorderPanel(onSendAudioClip: (ByteArray) -> Unit) {
   val elapsedMs = remember { mutableLongStateOf(0L) }
   val audioRecordState = remember { mutableStateOf<AudioRecord?>(null) }
   val audioStream = remember { ByteArrayOutputStream() }
-  val recordedBytes = remember { mutableStateOf<ByteArray?>(null) }
-  var currentAmplitude by remember { mutableIntStateOf(0) }
 
   val elapsedSeconds by remember {
-    derivedStateOf { "%.1f".format(elapsedMs.value.toFloat() / 1000f) }
+    derivedStateOf { "%.1f".format(elapsedMs.longValue.toFloat() / 1000f) }
   }
 
   // Cleanup on Composable Disposal.
   DisposableEffect(Unit) { onDispose { audioRecordState.value?.release() } }
 
-  Column(modifier = Modifier.padding(bottom = 12.dp)) {
-    // Title bar.
+  Row(
+    modifier = modifier.fillMaxWidth().padding(horizontal = 8.dp),
+    horizontalArrangement = Arrangement.spacedBy(4.dp),
+    verticalAlignment = Alignment.CenterVertically,
+  ) {
+    // Close button.
+    IconButton(
+      onClick = {
+        if (isRecording) {
+          val unused = stopRecording(audioRecordState = audioRecordState, audioStream = audioStream)
+          isRecording = false
+        }
+        onClose()
+      },
+      colors =
+        IconButtonDefaults.iconButtonColors(
+          containerColor = MaterialTheme.colorScheme.surfaceContainer.copy(alpha = PANEL_ALPHA)
+        ),
+    ) {
+      Icon(
+        Icons.Rounded.Close,
+        contentDescription = stringResource(R.string.close),
+        tint = MaterialTheme.colorScheme.onSurface,
+      )
+    }
+
+    // Controls.
     Row(
+      modifier =
+        Modifier.clip(CircleShape)
+          .weight(1f)
+          .background(MaterialTheme.colorScheme.surfaceContainer.copy(alpha = PANEL_ALPHA))
+          .padding(start = 12.dp),
       verticalAlignment = Alignment.CenterVertically,
       horizontalArrangement = Arrangement.SpaceBetween,
     ) {
-      // Logo and state.
-      Row(
-        modifier = Modifier.padding(start = 16.dp),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-      ) {
-        Icon(
-          painterResource(R.drawable.logo),
-          modifier = Modifier.size(20.dp),
-          contentDescription = "",
-          tint = Color.Unspecified,
-        )
+      // Info message when there is no recorded clip and the recording has not started yet.
+      if (!isRecording) {
         Text(
-          "Record audio clip (up to $MAX_AUDIO_CLIP_DURATION_SEC seconds)",
-          style = MaterialTheme.typography.labelLarge,
+          "Tap the record button to start",
+          style = MaterialTheme.typography.labelMedium,
+          color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
       }
-    }
-
-    // Recorded clip.
-    Row(
-      modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp).height(40.dp),
-      verticalAlignment = Alignment.CenterVertically,
-      horizontalArrangement = Arrangement.Center,
-    ) {
-      val curRecordedBytes = recordedBytes.value
-      if (curRecordedBytes == null) {
-        // Info message when there is no recorded clip and the recording has not started yet.
-        if (!isRecording) {
-          Text(
-            "Tap the record button to start",
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-          )
-        }
-        // Visualization for clip being recorded.
-        else {
-          Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-          ) {
-            Box(
-              modifier =
-                Modifier.size(8.dp)
-                  .background(MaterialTheme.customColors.recordButtonBgColor, CircleShape)
-            )
-            Text("$elapsedSeconds s")
-          }
-        }
-      }
-      // Controls for recorded clip.
+      // Elapsed seconds when recording in progress.
       else {
-        Row {
-          // Clip player.
-          AudioPlaybackPanel(
-            audioData = curRecordedBytes,
-            sampleRate = SAMPLE_RATE,
-            isRecording = isRecording,
+        Row(
+          horizontalArrangement = Arrangement.spacedBy(12.dp),
+          verticalAlignment = Alignment.CenterVertically,
+        ) {
+          Box(
+            modifier =
+              Modifier.size(8.dp)
+                .background(MaterialTheme.customColors.recordButtonBgColor, CircleShape)
           )
-
-          // Button to send the clip
-          IconButton(onClick = { onSendAudioClip(curRecordedBytes) }) {
-            Icon(Icons.Rounded.ArrowUpward, contentDescription = "")
-          }
+          Text("$elapsedSeconds s")
         }
       }
-    }
 
-    // Buttons
-    Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxWidth().height(40.dp)) {
-      // Visualization of the current amplitude.
-      if (isRecording) {
-        // Normalize the amplitude (0-32767) to a fraction (0.0-1.0)
-        // We use a power scale (exponent < 1) to make the pulse more visible for lower volumes.
-        val normalizedAmplitude = (currentAmplitude.toFloat() / 32767f).pow(0.35f)
-        // Define the min and max size of the circle
-        val minSize = 38.dp
-        val maxSize = 100.dp
-
-        // Map the normalized amplitude to our size range
-        val scale by
-          remember(normalizedAmplitude) {
-            derivedStateOf { (minSize + (maxSize - minSize) * normalizedAmplitude) / minSize }
-          }
-        Box(
-          modifier =
-            Modifier.size(minSize)
-              .graphicsLayer(scaleX = scale, scaleY = scale, clip = false, alpha = 0.3f)
-              .background(MaterialTheme.customColors.recordButtonBgColor, CircleShape)
-        )
-      }
-
-      // Record/stop button.
+      // Record/send button.
       IconButton(
+        modifier = Modifier.semantics { liveRegion = LiveRegionMode.Assertive },
         onClick = {
           coroutineScope.launch {
             if (!isRecording) {
               isRecording = true
-              recordedBytes.value = null
               startRecording(
                 context = context,
                 audioRecordState = audioRecordState,
                 audioStream = audioStream,
                 elapsedMs = elapsedMs,
-                onAmplitudeChanged = { currentAmplitude = it },
+                onAmplitudeChanged = onAmplitudeChanged,
                 onMaxDurationReached = {
                   val curRecordedBytes =
                     stopRecording(audioRecordState = audioRecordState, audioStream = audioStream)
-                  recordedBytes.value = curRecordedBytes
+                  onSendAudioClip(curRecordedBytes)
                   isRecording = false
                 },
               )
             } else {
               val curRecordedBytes =
                 stopRecording(audioRecordState = audioRecordState, audioStream = audioStream)
-              recordedBytes.value = curRecordedBytes
+              onSendAudioClip(curRecordedBytes)
               isRecording = false
             }
           }
         },
-        modifier =
-          Modifier.clip(CircleShape).background(MaterialTheme.customColors.recordButtonBgColor),
+        colors = IconButtonDefaults.iconButtonColors(containerColor = getTaskIconColor(task = task)),
       ) {
         Icon(
-          if (isRecording) Icons.Rounded.Stop else Icons.Rounded.Mic,
-          contentDescription = "",
+          if (isRecording) Icons.Rounded.ArrowUpward else Icons.Rounded.Mic,
+          contentDescription =
+            stringResource(
+              if (isRecording) R.string.cd_send_audio_clip_icon else R.string.cd_start_recording
+            ),
           tint = Color.White,
         )
       }
@@ -272,7 +251,7 @@ private suspend fun startRecording(
       recorder.startRecording()
 
       val startMs = System.currentTimeMillis()
-      elapsedMs.value = 0L
+      elapsedMs.longValue = 0L
       while (audioRecordState.value?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
         val bytesRead = recorder.read(buffer, 0, buffer.size)
         if (bytesRead > 0) {
@@ -280,8 +259,8 @@ private suspend fun startRecording(
           onAmplitudeChanged(currentAmplitude)
           audioStream.write(buffer, 0, bytesRead)
         }
-        elapsedMs.value = System.currentTimeMillis() - startMs
-        if (elapsedMs.value >= MAX_AUDIO_CLIP_DURATION_SEC * 1000) {
+        elapsedMs.longValue = System.currentTimeMillis() - startMs
+        if (elapsedMs.longValue >= MAX_AUDIO_CLIP_DURATION_SEC * 1000) {
           onMaxDurationReached()
           break
         }
@@ -308,20 +287,4 @@ private fun stopRecording(
   Log.d(TAG, "Stopped. Recorded ${recordedBytes.size} bytes.")
 
   return recordedBytes
-}
-
-private fun calculatePeakAmplitude(buffer: ByteArray, bytesRead: Int): Int {
-  // Wrap the byte array in a ByteBuffer and set the order to little-endian
-  val shortBuffer =
-    ByteBuffer.wrap(buffer, 0, bytesRead).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
-
-  var maxAmplitude = 0
-  // Iterate through the short buffer to find the maximum absolute value
-  while (shortBuffer.hasRemaining()) {
-    val currentSample = abs(shortBuffer.get().toInt())
-    if (currentSample > maxAmplitude) {
-      maxAmplitude = currentSample
-    }
-  }
-  return maxAmplitude
 }

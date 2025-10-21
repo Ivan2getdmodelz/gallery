@@ -21,20 +21,23 @@ import android.graphics.Bitmap
 import android.util.Log
 import com.google.ai.edge.gallery.common.cleanUpMediapipeTaskErrorMessage
 import com.google.ai.edge.gallery.data.Accelerator
-import com.google.ai.edge.gallery.data.BuiltInTaskId
 import com.google.ai.edge.gallery.data.ConfigKeys
 import com.google.ai.edge.gallery.data.DEFAULT_MAX_TOKEN
 import com.google.ai.edge.gallery.data.DEFAULT_TEMPERATURE
 import com.google.ai.edge.gallery.data.DEFAULT_TOPK
 import com.google.ai.edge.gallery.data.DEFAULT_TOPP
-import com.google.ai.edge.gallery.data.MAX_IMAGE_COUNT
 import com.google.ai.edge.gallery.data.Model
-import com.google.ai.edge.gallery.data.Task
-import com.google.mediapipe.framework.image.BitmapImageBuilder
-import com.google.mediapipe.tasks.genai.llminference.AudioModelOptions
-import com.google.mediapipe.tasks.genai.llminference.GraphOptions
-import com.google.mediapipe.tasks.genai.llminference.LlmInference
-import com.google.mediapipe.tasks.genai.llminference.LlmInferenceSession
+import com.google.ai.edge.litertlm.Backend
+import com.google.ai.edge.litertlm.Content
+import com.google.ai.edge.litertlm.Conversation
+import com.google.ai.edge.litertlm.ConversationConfig
+import com.google.ai.edge.litertlm.Engine
+import com.google.ai.edge.litertlm.EngineConfig
+import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.MessageCallbacks
+import com.google.ai.edge.litertlm.SamplerConfig
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.CancellationException
 
 private const val TAG = "AGLlmChatModelHelper"
 
@@ -42,13 +45,19 @@ typealias ResultListener = (partialResult: String, done: Boolean) -> Unit
 
 typealias CleanUpListener = () -> Unit
 
-data class LlmModelInstance(val engine: LlmInference, var session: LlmInferenceSession)
+data class LlmModelInstance(val engine: Engine, var conversation: Conversation)
 
 object LlmChatModelHelper {
   // Indexed by model name.
   private val cleanUpListeners: MutableMap<String, CleanUpListener> = mutableMapOf()
 
-  fun initialize(context: Context, task: Task, model: Model, onDone: (String) -> Unit) {
+  fun initialize(
+    context: Context,
+    model: Model,
+    supportImage: Boolean,
+    supportAudio: Boolean,
+    onDone: (String) -> Unit,
+  ) {
     // Prepare options.
     val maxTokens =
       model.getIntConfigValue(key = ConfigKeys.MAX_TOKENS, defaultValue = DEFAULT_MAX_TOKEN)
@@ -59,46 +68,42 @@ object LlmChatModelHelper {
     val accelerator =
       model.getStringConfigValue(key = ConfigKeys.ACCELERATOR, defaultValue = Accelerator.GPU.label)
     Log.d(TAG, "Initializing...")
-    val shouldEnableImage = model.llmSupportImage && task.id == BuiltInTaskId.LLM_ASK_IMAGE
-    val shouldEnableAudio = model.llmSupportAudio && task.id == BuiltInTaskId.LLM_ASK_AUDIO
+    val shouldEnableImage = supportImage
+    val shouldEnableAudio = supportAudio
     Log.d(TAG, "Enable image: $shouldEnableImage, enable audio: $shouldEnableAudio")
     val preferredBackend =
       when (accelerator) {
-        Accelerator.CPU.label -> LlmInference.Backend.CPU
-        Accelerator.GPU.label -> LlmInference.Backend.GPU
-        else -> LlmInference.Backend.GPU
+        Accelerator.CPU.label -> Backend.CPU
+        Accelerator.GPU.label -> Backend.GPU
+        else -> Backend.GPU
       }
-    val optionsBuilder =
-      LlmInference.LlmInferenceOptions.builder()
-        .setModelPath(model.getPath(context = context))
-        .setMaxTokens(maxTokens)
-        .setPreferredBackend(preferredBackend)
-        .setMaxNumImages(if (shouldEnableImage) MAX_IMAGE_COUNT else 0)
-    if (shouldEnableAudio) {
-      optionsBuilder.setAudioModelOptions(AudioModelOptions.builder().build())
-    }
-    val options = optionsBuilder.build()
+    val engineConfig =
+      EngineConfig(
+        modelPath = model.getPath(context = context),
+        backend = preferredBackend,
+        visionBackend = if (shouldEnableImage) Backend.GPU else null, // must be GPU for Gemma 3n
+        audioBackend = if (shouldEnableAudio) Backend.CPU else null, // must be CPU for Gemma 3n
+        maxNumTokens = maxTokens,
+        enableBenchmark = true,
+      )
 
-    // Create an instance of the LLM Inference task and session.
+    // Create an instance of the LLM Inference task and conversation.
     try {
-      val llmInference = LlmInference.createFromOptions(context, options)
+      val engine = Engine(engineConfig)
+      engine.initialize()
 
-      val session =
-        LlmInferenceSession.createFromOptions(
-          llmInference,
-          LlmInferenceSession.LlmInferenceSessionOptions.builder()
-            .setTopK(topK)
-            .setTopP(topP)
-            .setTemperature(temperature)
-            .setGraphOptions(
-              GraphOptions.builder()
-                .setEnableVisionModality(shouldEnableImage)
-                .setEnableAudioModality(shouldEnableAudio)
-                .build()
-            )
-            .build(),
+      val conversation =
+        engine.createConversation(
+          ConversationConfig(
+            samplerConfig =
+              SamplerConfig(
+                topK = topK,
+                topP = topP.toDouble(),
+                temperature = temperature.toDouble(),
+              )
+          )
         )
-      model.instance = LlmModelInstance(engine = llmInference, session = session)
+      model.instance = LlmModelInstance(engine = engine, conversation = conversation)
     } catch (e: Exception) {
       onDone(cleanUpMediapipeTaskErrorMessage(e.message ?: "Unknown error"))
       return
@@ -106,41 +111,38 @@ object LlmChatModelHelper {
     onDone("")
   }
 
-  fun resetSession(task: Task, model: Model) {
+  fun resetConversation(model: Model, supportImage: Boolean, supportAudio: Boolean) {
     try {
-      Log.d(TAG, "Resetting session for model '${model.name}'")
+      Log.d(TAG, "Resetting conversation for model '${model.name}'")
 
       val instance = model.instance as LlmModelInstance? ?: return
-      val session = instance.session
-      session.close()
+      instance.conversation.close()
 
-      val inference = instance.engine
+      val engine = instance.engine
       val topK = model.getIntConfigValue(key = ConfigKeys.TOPK, defaultValue = DEFAULT_TOPK)
       val topP = model.getFloatConfigValue(key = ConfigKeys.TOPP, defaultValue = DEFAULT_TOPP)
       val temperature =
         model.getFloatConfigValue(key = ConfigKeys.TEMPERATURE, defaultValue = DEFAULT_TEMPERATURE)
-      val shouldEnableImage = model.llmSupportImage && task.id == BuiltInTaskId.LLM_ASK_IMAGE
-      val shouldEnableAudio = model.llmSupportAudio && task.id == BuiltInTaskId.LLM_ASK_AUDIO
+      val shouldEnableImage = supportImage
+      val shouldEnableAudio = supportAudio
       Log.d(TAG, "Enable image: $shouldEnableImage, enable audio: $shouldEnableAudio")
-      val newSession =
-        LlmInferenceSession.createFromOptions(
-          inference,
-          LlmInferenceSession.LlmInferenceSessionOptions.builder()
-            .setTopK(topK)
-            .setTopP(topP)
-            .setTemperature(temperature)
-            .setGraphOptions(
-              GraphOptions.builder()
-                .setEnableVisionModality(shouldEnableImage)
-                .setEnableAudioModality(shouldEnableAudio)
-                .build()
-            )
-            .build(),
+
+      val newConversation =
+        engine.createConversation(
+          ConversationConfig(
+            samplerConfig =
+              SamplerConfig(
+                topK = topK,
+                topP = topP.toDouble(),
+                temperature = temperature.toDouble(),
+              )
+          )
         )
-      instance.session = newSession
+      instance.conversation = newConversation
+
       Log.d(TAG, "Resetting done")
     } catch (e: Exception) {
-      Log.d(TAG, "Failed to reset session", e)
+      Log.d(TAG, "Failed to reset conversation", e)
     }
   }
 
@@ -152,9 +154,9 @@ object LlmChatModelHelper {
     val instance = model.instance as LlmModelInstance
 
     try {
-      instance.session.close()
+      instance.conversation.close()
     } catch (e: Exception) {
-      Log.e(TAG, "Failed to close the LLM Inference session: ${e.message}")
+      Log.e(TAG, "Failed to close the LLM Inference conversation: ${e.message}")
     }
 
     try {
@@ -188,20 +190,49 @@ object LlmChatModelHelper {
       cleanUpListeners[model.name] = cleanUpListener
     }
 
-    // Start async inference.
-    //
-    // For a model that supports image modality, we need to add the text query chunk before adding
-    // image.
-    val session = instance.session
-    if (input.trim().isNotEmpty()) {
-      session.addQueryChunk(input)
-    }
+    val conversation = instance.conversation
+
+    val contents = mutableListOf<Content>()
     for (image in images) {
-      session.addImage(BitmapImageBuilder(image).build())
+      contents.add(Content.ImageBytes(image.toPngByteArray()))
     }
     for (audioClip in audioClips) {
-      session.addAudio(audioClip)
+      contents.add(Content.AudioBytes(audioClip))
     }
-    val unused = session.generateResponseAsync(resultListener)
+    // add the text after image and audio for the accurate last token
+    if (input.trim().isNotEmpty()) {
+      contents.add(Content.Text(input))
+    }
+
+    conversation.sendMessageAsync(
+      Message.of(contents),
+      object : MessageCallbacks {
+        override fun onMessage(message: Message) {
+          message.contents.filterIsInstance<Content.Text>().forEach {
+            resultListener(it.text, false)
+          }
+        }
+
+        override fun onDone() {
+          resultListener("", true)
+        }
+
+        override fun onError(throwable: Throwable) {
+          if (throwable is CancellationException) {
+            Log.i(TAG, "The inference is canncelled.")
+            resultListener("", true)
+          } else {
+            Log.e(TAG, "onError", throwable)
+            resultListener("Error: ${throwable.message}", true)
+          }
+        }
+      },
+    )
+  }
+
+  private fun Bitmap.toPngByteArray(): ByteArray {
+    val stream = ByteArrayOutputStream()
+    this.compress(Bitmap.CompressFormat.PNG, 100, stream)
+    return stream.toByteArray()
   }
 }
